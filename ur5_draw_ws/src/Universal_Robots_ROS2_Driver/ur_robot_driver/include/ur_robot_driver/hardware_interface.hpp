@@ -312,7 +312,7 @@ protected:
 
   std::atomic_bool rtde_comm_has_been_started_ = false;
 
-  urcl::RobotReceiveTimeout receive_timeout_ = urcl::RobotReceiveTimeout::millisec(20);
+  urcl::RobotReceiveTimeout receive_timeout_ = urcl::RobotReceiveTimeout::millisec(2000000);
 
   const std::string PASSTHROUGH_GPIO = "trajectory_passthrough";
   const std::string FORCE_MODE_GPIO = "force_mode";
