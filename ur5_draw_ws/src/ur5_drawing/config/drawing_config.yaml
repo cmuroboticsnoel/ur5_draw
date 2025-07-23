@@ -1,0 +1,106 @@
+# UR5 Drawing Configuration File
+# ~/ur5_draw/ur5_draw_ws/src/ur5_drawing/config/drawing_config.yaml
+
+# Network Configuration
+network:
+  robot_ip: "192.168.1.102"  # IP address of the UR5 robot
+  pc_ip: "192.168.1.101"     # IP address of the control PC
+  ur_type: "ur5"             # Robot type (ur3, ur5, ur10, ur16)
+
+# Physical Setup Configuration
+physical:
+  # Origin position and orientation on the robot base frame
+  # [x, y, z, roll, pitch, yaw] - position in meters, orientation in radians
+  origin: [-0.345, -0.517, 0.032, 1.26, -2.928, 0]
+  
+  # Paper dimensions in meters
+  paper_width: 0.2794   # 11 inches = 0.2794 meters
+  paper_height: 0.2159  # 8.5 inches = 0.2159 meters
+  
+  # Safety and drawing parameters
+  lift_offset: 0.02     # Height to lift pen above paper (meters)
+  drawing_speed: 0.25   # Drawing speed (m/s)
+
+# Image Processing Configuration
+image:
+  width: 800   # Expected image width in pixels
+  height: 600  # Expected image height in pixels
+
+# Robot Planning Configuration
+planning:
+  planning_group: "manipulator"        # MoveIt planning group name
+  max_planning_attempts: 5             # Maximum planning attempts per motion
+  planning_time: 5.0                   # Planning timeout (seconds)
+  replan_attempts: 3                   # Number of replan attempts if execution fails
+  goal_position_tolerance: 0.001       # Position tolerance for goal (meters)
+  goal_orientation_tolerance: 0.01     # Orientation tolerance for goal (radians)
+  
+  # Cartesian path planning parameters
+  cartesian:
+    eef_step: 0.005          # End-effector step size for Cartesian paths (meters)
+    jump_threshold: 0.0      # Jump threshold for Cartesian paths (0 = disabled)
+    avoid_collisions: true   # Enable collision avoidance during planning
+
+# File Paths Configuration
+files:
+  drawing_sequences: "drawing_sequences.json"  # Name of the JSON file containing drawing sequences
+  rviz_config: "drawing.rviz"                  # RViz configuration file name
+  calibration_file: "calibration.yaml"        # Robot calibration file name
+
+# Launch Configuration
+launch:
+  use_fake_hardware: false   # Set to true for simulation, false for real robot
+  headless_mode: true        # Run without robot pendant interface
+  initial_joint_controller: "joint_trajectory_controller"  # Initial controller to load
+  
+  # Default launch arguments
+  default_use_rviz: true
+  default_use_sim_time: false
+
+# Safety Limits
+safety:
+  max_velocity: 0.5         # Maximum allowed velocity (m/s)
+  max_acceleration: 1.0     # Maximum allowed acceleration (m/s²)
+  workspace_limits:         # Workspace boundaries (meters from robot base)
+    x_min: -0.8
+    x_max: 0.8
+    y_min: -0.8
+    y_max: 0.8
+    z_min: 0.0
+    z_max: 0.5
+
+# Collision Environment Configuration
+collision:
+  object_padding: 0.01      # Padding around collision objects (meters)
+  
+  # Table collision object
+  table:
+    enabled: true
+    size: [0.5, 0.5, 0.1]   # [width, depth, height] in meters
+    offset: [0.0, 0.0, -0.05]  # Offset from origin [x, y, z]
+  
+  # Paper collision object  
+  paper:
+    enabled: true
+    thickness: 0.002         # Paper thickness (meters)
+    offset: [0.0, 0.0, 0.001]  # Slight offset above table
+
+# Debugging and Visualization
+debug:
+  save_debug_images: false    # Save intermediate processing images
+  debug_output_path: "/tmp/ur5_drawing_debug/"  # Path for debug outputs
+  verbose_planning: false     # Enable verbose MoveIt planning output
+  
+# Advanced Parameters (usually don't need to change)
+advanced:
+  # Joint limits safety margin
+  joint_margin: 0.05         # Margin from joint limits (radians)
+  
+  # Trajectory execution parameters
+  execution_timeout: 30.0    # Maximum time to wait for trajectory execution (seconds)
+  
+  # Service call timeouts
+  service_timeout: 10.0      # Timeout for service calls (seconds)
+  
+  # Threading configuration
+  callback_group_type: "reentrant"  # Type of callback group for service handling

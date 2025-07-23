@@ -212,7 +212,7 @@ def launch_setup(context, *args, **kwargs):
     move_group_node = Node(
         package="moveit_ros_move_group",
         executable="move_group",
-        output="screen",
+        output="log",
         parameters=[
             robot_description,
             robot_description_semantic,
@@ -264,7 +264,7 @@ def launch_setup(context, *args, **kwargs):
             robot_description,
             robot_description_semantic,
         ],
-        output="screen",
+        output="log",
     )
 
     nodes_to_start = [move_group_node, rviz_node, servo_node]

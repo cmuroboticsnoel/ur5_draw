@@ -229,7 +229,7 @@ def launch_setup(context, *args, **kwargs):
             update_rate_config_file,
             ParameterFile(initial_joint_controllers, allow_substs=True),
         ],
-        output="screen",
+        output="log",
         condition=IfCondition(use_fake_hardware),
     )
 
@@ -241,7 +241,7 @@ def launch_setup(context, *args, **kwargs):
             update_rate_config_file,
             ParameterFile(initial_joint_controllers, allow_substs=True),
         ],
-        output="screen",
+        output="log",
         condition=UnlessCondition(use_fake_hardware),
     )
 
@@ -252,7 +252,7 @@ def launch_setup(context, *args, **kwargs):
         ),
         executable="dashboard_client",
         name="dashboard_client",
-        output="screen",
+        output="log",
         emulate_tty=True,
         parameters=[{"robot_ip": robot_ip}],
     )
@@ -261,7 +261,7 @@ def launch_setup(context, *args, **kwargs):
         package="ur_robot_driver",
         executable="robot_state_helper",
         name="ur_robot_state_helper",
-        output="screen",
+        output="log",
         condition=UnlessCondition(use_fake_hardware),
         parameters=[
             {"headless_mode": headless_mode},
@@ -274,7 +274,7 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(use_tool_communication),
         executable="tool_communication.py",
         name="ur_tool_comm",
-        output="screen",
+        output="log",
         parameters=[
             {
                 "robot_ip": robot_ip,
@@ -288,14 +288,14 @@ def launch_setup(context, *args, **kwargs):
         package="ur_robot_driver",
         executable="urscript_interface",
         parameters=[{"robot_ip": robot_ip}],
-        output="screen",
+        output="log",
     )
 
     controller_stopper_node = Node(
         package="ur_robot_driver",
         executable="controller_stopper_node",
         name="controller_stopper",
-        output="screen",
+        output="log",
         emulate_tty=True,
         condition=UnlessCondition(use_fake_hardware),
         parameters=[

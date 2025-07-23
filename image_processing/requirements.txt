@@ -1,0 +1,16 @@
+# Image Processing Dependencies
+# opencv-python>=4.8.0
+opencv-contrib-python>=4.8.0
+
+# Numerical Computing
+numpy>=1.21.0
+scipy>=1.9.0
+
+# Progress Bars
+tqdm>=4.64.0
+
+# Terminal Interface
+simple-term-menu>=1.6.0
+
+# Optional: For additional image processing capabilities
+# scikit-image>=0.19.0

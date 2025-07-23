@@ -1,0 +1,23 @@
+Visualization Manager:
+  Class: rviz_common/VisualizationManager
+  Displays:
+    - Class: rviz_default_plugins/RobotModel
+      Description: Displays the 3D model of a robot, specified in a URDF.
+      Name: RobotModel
+      Topic: /robot_description
+    - Class: rviz_default_plugins/PlanningScene
+      Description: Displays planning scene updates from MoveIt.
+      Name: PlanningScene
+      Topic: /planning_scene
+    - Class: rviz_default_plugins/Trajectory
+      Description: Displays planned or executed joint trajectory.
+      Name: Trajectory
+      Topic: /display_planned_path
+    - Class: rviz_default_plugins/MarkerArray
+      Description: Displays marker arrays
+      Name: Drawing
+      Topic: /drawing_markers
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: base_link
+  Value: true
