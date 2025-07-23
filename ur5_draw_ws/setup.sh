@@ -234,21 +234,6 @@ test_workspace() {
 check_dependencies() {
     echo -e "${YELLOW}Checking dependencies...${NC}"
     
-    # Check Python
-    if command -v python3 &> /dev/null; then
-        echo -e "${GREEN}✓ Python3 available${NC}"
-    else
-        echo -e "${RED}✗ Python3 not found${NC}"
-    fi
-    
-    # Check PyYAML
-    if python3 -c "import yaml" 2>/dev/null; then
-        echo -e "${GREEN}✓ PyYAML available${NC}"
-    else
-        echo -e "${YELLOW}⚠ PyYAML not found${NC}"
-        echo -e "${YELLOW}  Install with: pip3 install PyYAML${NC}"
-    fi
-    
     # Check ROS 2
     if [ -f "/opt/ros/humble/setup.bash" ]; then
         echo -e "${GREEN}✓ ROS 2 Humble found${NC}"

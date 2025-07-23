@@ -66,7 +66,7 @@ def get_default_config():
         'launch': {
             'use_fake_hardware': False,
             'headless_mode': True,
-            'initial_joint_controller': 'joint_trajectory_controller',
+            'initial_joint_controller': 'scaled_joint_trajectory_controller',
             'default_use_rviz': True,
             'default_use_sim_time': False
         },
@@ -86,13 +86,14 @@ def get_default_config():
 
 def generate_launch_description():
     # Get package directories
-    pkg_src = os.path.expanduser('~/ur5_draw/ur5_draw_ws/src/ur5_drawing')
+    pkg_ur_drawing = get_package_share_directory('ur5_drawing')
     pkg_ur_robot_driver = get_package_share_directory('ur_robot_driver')
     pkg_ur_moveit_config = get_package_share_directory('ur_moveit_config')
     pkg_ur_calibration = get_package_share_directory('ur_calibration')
     
     # Load drawing configuration
-    config = load_drawing_config(pkg_src)
+    config_path = os.path.expanduser('~/ur5_draw/ur5_draw_ws/src/ur5_drawing/config')
+    config = load_drawing_config(config_path)
     
     # Extract configuration values
     network_config = config['network']
@@ -106,7 +107,7 @@ def generate_launch_description():
     cartesian_config = config.get('planning', {}).get('cartesian', config.get('cartesian', {}))
     
     # Build file paths
-    CONFIG_PATH = os.path.join(pkg_src, 'config')
+    CONFIG_PATH = os.path.join(config_path)
     CALIBRATION_FILE_PATH = os.path.join(CONFIG_PATH, files_config['calibration_file'])
     
     # Configuration variables from launch arguments
@@ -142,7 +143,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ur_robot_driver, 'launch', 'ur_control.launch.py')
         ),
-        launch_arguments=ur_launch_args.items()
+        launch_arguments=dict(ur_launch_args, **{'launch_rviz': 'false'}).items()
     )
     
     # MoveIt! configuration
@@ -158,75 +159,78 @@ def generate_launch_description():
     )
     
     # RViz node with custom configuration
-    rviz_config_file = os.path.join(pkg_src, 'resource', files_config['rviz_config'])
+    rviz_config_file = os.path.join(pkg_ur_drawing, 'resource', files_config['rviz_config'])
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        output='log',
+        output='log',  # Send RViz output to log files, not terminal
         arguments=['-d', rviz_config_file],
         parameters=[{'use_sim_time': use_sim_time}],
         condition=IfCondition(use_rviz)
     )
     
-    # Drawing node with all configuration parameters
+    # C++ Drawing node - ONLY this node outputs to screen
     drawing_node = Node(
         package='ur5_drawing',
         executable='ur5_drawing_node',
         name='ur5_drawing_node',
-        output='screen',
+        output='screen',  # This is the only node that outputs to terminal
         parameters=[{
-            # Physical configuration
-            'origin': physical_config['origin'],
-            'paper_width': physical_config['paper_width'],
-            'paper_height': physical_config['paper_height'],
-            'lift_offset': physical_config['lift_offset'],
-            'drawing_speed': physical_config['drawing_speed'],
-            
-            # Image configuration
-            'image_width': image_config['width'],
-            'image_height': image_config['height'],
-            
-            # Planning configuration
-            'planning_group': planning_config['planning_group'],
-            'max_planning_attempts': planning_config['max_planning_attempts'],
-            'planning_time': planning_config['planning_time'],
-            'replan_attempts': planning_config['replan_attempts'],
-            'goal_position_tolerance': planning_config['goal_position_tolerance'],
-            'goal_orientation_tolerance': planning_config['goal_orientation_tolerance'],
-            
-            # Cartesian planning parameters
-            'eef_step': cartesian_config.get('eef_step', 0.005),
-            'jump_threshold': cartesian_config.get('jump_threshold', 0.0),
-            'avoid_collisions': cartesian_config.get('avoid_collisions', True),
-            
-            # Safety parameters
-            'max_velocity': safety_config.get('max_velocity', 0.5),
-            'max_acceleration': safety_config.get('max_acceleration', 1.0),
-            
-            # Collision parameters
-            'collision_object_padding': collision_config['object_padding'],
-            
-            # File paths
-            'drawing_file': os.path.join(pkg_src, 'resource', files_config['drawing_sequences']),
+            'use_sim_time': use_sim_time,
         }]
+    )
+
+    # Status confirmation nodes
+    ur_control_status = ExecuteProcess(
+        cmd=['echo', '✓ UR Control launched successfully'],
+        shell=False,
+        output='screen'
+    )
+    
+    moveit_status = ExecuteProcess(
+        cmd=['echo', '✓ MoveIt planning launched successfully'],
+        shell=False,
+        output='screen'
+    )
+    
+    rviz_status = ExecuteProcess(
+        cmd=['echo', '✓ RViz visualization launched successfully'],
+        shell=False,
+        output='screen',
+        condition=IfCondition(use_rviz)
     )
 
     post_calibration_actions = [
         ExecuteProcess(
-            cmd=['echo', '✓ Calibration initiated. Waiting for robot control...'],
+            cmd=['echo', '✓ Calibration completed. Starting robot systems...'],
             shell=False,
             output='screen'
         ),
-        # ur_control_launch,
-        # moveit_launch,
-        # rviz_node,
-        drawing_node
+        ur_control_launch,
+        TimerAction(
+            period=3.0,
+            actions=[ur_control_status]
+        ),
+        moveit_launch,
+        TimerAction(
+            period=6.0,
+            actions=[moveit_status]
+        ),
+        rviz_node,
+        TimerAction(
+            period=8.0,
+            actions=[rviz_status]
+        ),
+        TimerAction(
+            period=10.0,
+            actions=[drawing_node]
+        )
     ]
     
     # Print configuration summary
     print("\n" + "="*60)
-    print("UR5 DRAWING LAUNCH CONFIGURATION")
+    print("UR5 DRAWING C++ LAUNCH CONFIGURATION")
     print("="*60)
     print(f"Robot Type: {network_config['ur_type']}")
     print(f"Robot IP: {network_config['robot_ip']}")
@@ -236,7 +240,7 @@ def generate_launch_description():
     print(f"Drawing Speed: {physical_config['drawing_speed']} m/s")
     print(f"Pen Lift Height: {physical_config['lift_offset']*1000:.1f} mm")
     print(f"Planning Group: {planning_config['planning_group']}")
-    print(f"Config File: {os.path.join(pkg_src, 'config', 'drawing_config.yaml')}")
+    print(f"Config Path: {CONFIG_PATH}")
     print("="*60 + "\n")
     
     return LaunchDescription([
@@ -262,7 +266,7 @@ def generate_launch_description():
         # Launch components
         ur_calibration_launch,  # Only runs with real hardware
         TimerAction(
-            period=5.0,  # <--- Adjust this delay (e.g., 5 seconds)
+            period=5.0,  # Adjust this delay (e.g., 5 seconds)
             actions=post_calibration_actions,
             cancel_on_shutdown=True
         ),

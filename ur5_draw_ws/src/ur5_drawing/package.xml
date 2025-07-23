@@ -2,36 +2,36 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ur5_drawing</name>
-  <version>0.1.0</version>
-  <description>ROS2 node for UR5 drawing using MoveIt!</description>
-
-  <maintainer email="user@example.com">User</maintainer>
-  <license>Apache License 2.0</license>
+  <version>1.0.0</version>
+  <description>UR5 drawing package in C++ for ROS2 Humble</description>
+  <maintainer email="your.email@example.com">Your Name</maintainer>
+  <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>ament_cmake_python</buildtool_depend>
 
-  <depend>rclpy</depend>
-  <depend>moveit_core</depend>
-  <depend>moveit_ros_planning_interface</depend>
-  <depend>moveit_visual_tools</depend>
-  <depend>geometry_msgs</depend>
-  <depend>tf2_ros</depend>
-  <depend>tf2_geometry_msgs</depend>
+  <depend>rclcpp</depend>
   <depend>std_srvs</depend>
-  <depend>trajectory_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>visualization_msgs</depend>
-  <depend>sensor_msgs</depend>
+  <depend>moveit_core</depend>
+  <depend>moveit_ros_planning</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>eigen3-cmake-module</depend>
 
-  <exec_depend>joint_state_publisher</exec_depend>
-  <exec_depend>robot_state_publisher</exec_depend>
-  <exec_depend>xacro</exec_depend>
-  <exec_depend>rviz2</exec_depend>
+  <build_depend>pkg-config</build_depend>
+  <build_depend>libyaml-cpp-dev</build_depend>
+  <build_depend>nlohmann-json3-dev</build_depend>
+  
+  <exec_depend>libyaml-cpp-dev</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>
