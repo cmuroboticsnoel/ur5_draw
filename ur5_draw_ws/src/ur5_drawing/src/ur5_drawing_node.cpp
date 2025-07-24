@@ -2,18 +2,23 @@
 #include <chrono>
 #include <thread>
 #include <filesystem>
+#include <fcntl.h>
 
 using namespace std::chrono_literals;
 
 namespace ur5_drawing {
 
-UR5DrawingNode::UR5DrawingNode() : Node("ur5_drawing_node") {
+UR5DrawingNode::UR5DrawingNode() : Node("ur5_joint_drawing_node"), emergency_stop_(false) {
+    // Initialize joint names for UR5
+    joint_names_ = {"shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", 
+                   "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"};
+    
     // Create callback group for parallel service handling
     callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     
     // Load configuration
     std::string config_path = std::string(getenv("HOME")) + "/ur5_draw/ur5_draw_ws/src/ur5_drawing/config/drawing_config.yaml";
-    config_ = ConfigLoader::loadDrawingConfig(config_path);
+    config_ = ConfigLoader::loadJointDrawingConfig(config_path);
     
     // Print configuration summary
     ConfigLoader::printConfigSummary(config_);
@@ -21,14 +26,23 @@ UR5DrawingNode::UR5DrawingNode() : Node("ur5_drawing_node") {
     // Initialize parameters
     initializeParameters();
     
-    // Create publishers first
+    // Create publishers
     display_trajectory_pub_ = this->create_publisher<moveit_msgs::msg::DisplayTrajectory>(
         "display_planned_path", 10);
     
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
         "drawing_markers", 10);
     
-    // Create service
+    joint_trajectory_pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
+        "joint_trajectory", 10);
+    
+    // Create joint state subscriber
+    joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+        "/joint_states", 10,
+        std::bind(&UR5DrawingNode::jointStateCallback, this, std::placeholders::_1)
+    );
+    
+    // Create services
     drawing_service_ = this->create_service<std_srvs::srv::Trigger>(
         "start_drawing",
         std::bind(&UR5DrawingNode::startDrawingCallback, this, 
@@ -37,7 +51,26 @@ UR5DrawingNode::UR5DrawingNode() : Node("ur5_drawing_node") {
         callback_group_
     );
     
-    // Initialize MoveIt components after a delay to ensure everything is ready
+    calibration_service_ = this->create_service<std_srvs::srv::Trigger>(
+        "calibrate_joints",
+        std::bind(&UR5DrawingNode::calibrationCallback, this,
+                 std::placeholders::_1, std::placeholders::_2),
+        rmw_qos_profile_services_default,
+        callback_group_
+    );
+    
+    emergency_stop_service_ = this->create_service<std_srvs::srv::SetBool>(
+        "emergency_stop",
+        std::bind(&UR5DrawingNode::emergencyStopCallback, this,
+                 std::placeholders::_1, std::placeholders::_2),
+        rmw_qos_profile_services_default,
+        callback_group_
+    );
+    
+    // Initialize joint trajectory action client
+    initializeJointTrajectoryClient();
+    
+    // Initialize MoveIt components after a delay
     moveit_init_timer_ = this->create_wall_timer(
         std::chrono::seconds(3),
         [this]() {
@@ -46,7 +79,7 @@ UR5DrawingNode::UR5DrawingNode() : Node("ur5_drawing_node") {
         }
     );
     
-    RCLCPP_INFO(this->get_logger(), "UR5 Drawing Node initialized. MoveIt will be initialized in 3 seconds.");
+    RCLCPP_INFO(this->get_logger(), "UR5 Joint Drawing Node initialized. MoveIt will be initialized in 3 seconds.");
 }
 
 UR5DrawingNode::~UR5DrawingNode() {
@@ -54,26 +87,14 @@ UR5DrawingNode::~UR5DrawingNode() {
 }
 
 void UR5DrawingNode::initializeParameters() {
-    // Setup origin structure
-    if (config_.physical.origin.size() >= 6) {
-        origin_.position[0] = config_.physical.origin[0];
-        origin_.position[1] = config_.physical.origin[1];
-        origin_.position[2] = config_.physical.origin[2];
-        origin_.orientation[0] = config_.physical.origin[3]; // roll
-        origin_.orientation[1] = config_.physical.origin[4]; // pitch
-        origin_.orientation[2] = config_.physical.origin[5]; // yaw
-
-        RCLCPP_INFO(this->get_logger(), "ORIGIN: %f, %f, %f", 
-                    origin_.position[0], origin_.position[1], origin_.position[2]);
-    } else {
-        RCLCPP_ERROR(this->get_logger(), "Invalid origin configuration. Using defaults.");
-        origin_.position = {-0.345, -0.517, 0.032};
-        origin_.orientation = {1.26, -2.928, 0};
-    }
+    // Update corner positions from configuration
+    updateCornerPositions();
+    
+    RCLCPP_INFO(this->get_logger(), "Joint-based drawing parameters initialized");
 }
 
 void UR5DrawingNode::initializeMoveIt() {
-    RCLCPP_INFO(this->get_logger(), "Initializing MoveIt!...");
+    RCLCPP_INFO(this->get_logger(), "Initializing MoveIt! for visualization...");
     
     try {
         // Initialize robot model loader
@@ -88,26 +109,41 @@ void UR5DrawingNode::initializeMoveIt() {
         robot_state_ = std::make_shared<moveit::core::RobotState>(robot_model_);
         robot_state_->setToDefaultValues();
         
-        // Create move group interface
+        // Create move group interface (for visualization only)
         move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(
             shared_from_this(), config_.planning.planning_group);
         
         // Create planning scene interface
         planning_scene_ = std::make_unique<moveit::planning_interface::PlanningSceneInterface>();
         
-        // Set planner parameters
-        move_group_->setGoalPositionTolerance(config_.planning.goal_position_tolerance);
-        move_group_->setGoalOrientationTolerance(config_.planning.goal_orientation_tolerance);
-        move_group_->setPlanningTime(config_.planning.planning_time);
-        move_group_->setNumPlanningAttempts(config_.planning.max_planning_attempts);
-        move_group_->setMaxVelocityScalingFactor(config_.safety.max_velocity);
-        move_group_->setMaxAccelerationScalingFactor(config_.safety.max_acceleration);
-        
-        RCLCPP_INFO(this->get_logger(), "MoveIt! initialized successfully. Ready to start drawing.");
+        RCLCPP_INFO(this->get_logger(), "MoveIt! initialized for visualization. Ready for joint-based drawing.");
         
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "Failed to initialize MoveIt!: %s", e.what());
         throw;
+    }
+}
+
+void UR5DrawingNode::initializeJointTrajectoryClient() {
+    joint_trajectory_action_client_ = rclcpp_action::create_client<FollowJointTrajectoryAction>(
+        this, "scaled_joint_trajectory_controller/follow_joint_trajectory");
+    
+    // Wait for action server
+    if (!joint_trajectory_action_client_->wait_for_action_server(std::chrono::seconds(10))) {
+        RCLCPP_WARN(this->get_logger(), "Joint trajectory action server not available. Commands will be published to topic instead.");
+    } else {
+        RCLCPP_INFO(this->get_logger(), "Joint trajectory action client initialized");
+    }
+}
+
+void UR5DrawingNode::jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {
+    current_joint_state_ = msg;
+    
+    // Update current joint position
+    if (msg->position.size() >= 6) {
+        for (int i = 0; i < 6; ++i) {
+            current_joint_position_[i] = msg->position[i];
+        }
     }
 }
 
@@ -117,39 +153,76 @@ void UR5DrawingNode::startDrawingCallback(
     
     (void)request; // Suppress unused parameter warning
     
-    // Check if MoveIt is initialized
-    if (!move_group_ || !planning_scene_) {
+    if (isEmergencyStop()) {
         response->success = false;
-        response->message = "MoveIt not initialized yet. Please wait a moment and try again.";
-        RCLCPP_ERROR(this->get_logger(), "Drawing request rejected: MoveIt not initialized");
+        response->message = "Cannot start drawing: Emergency stop is active";
         return;
     }
     
-    RCLCPP_INFO(this->get_logger(), "Starting drawing process...");
+    // Check if joint trajectory client is ready
+    if (!current_joint_state_) {
+        response->success = false;
+        response->message = "Joint drawing not ready: No joint state received";
+        RCLCPP_ERROR(this->get_logger(), "Drawing request rejected: No joint state");
+        return;
+    }
+    
+    RCLCPP_INFO(this->get_logger(), "Starting joint-based drawing process...");
     
     try {
         // Load drawing sequences
         auto sequences = loadDrawingSequences();
         
-        // Setup collision environment
-        setupCollisionEnvironment();
-
-        // moveToHome();
-        
-        // // Execute drawing
-        executeDrawing(sequences);
+        // Execute joint-based drawing
+        executeJointDrawing(sequences);
         
         // Visualize the entire drawing
         visualizeDrawing(sequences);
         
         response->success = true;
-        response->message = "Drawing completed successfully";
+        response->message = "Joint-based drawing completed successfully";
         
     } catch (const std::exception& e) {
         response->success = false;
         response->message = e.what();
-        RCLCPP_ERROR(this->get_logger(), "Drawing failed: %s", e.what());
+        RCLCPP_ERROR(this->get_logger(), "Joint drawing failed: %s", e.what());
     }
+}
+
+void UR5DrawingNode::calibrationCallback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+    
+    (void)request;
+    
+    RCLCPP_INFO(this->get_logger(), "Starting joint calibration process...");
+    
+    try {
+        performJointCalibration();
+        response->success = true;
+        response->message = "Joint calibration completed successfully";
+    } catch (const std::exception& e) {
+        response->success = false;
+        response->message = e.what();
+        RCLCPP_ERROR(this->get_logger(), "Joint calibration failed: %s", e.what());
+    }
+}
+
+void UR5DrawingNode::emergencyStopCallback(
+    const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+    std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+    
+    emergency_stop_.store(request->data);
+    
+    if (request->data) {
+        RCLCPP_WARN(this->get_logger(), "Emergency stop activated!");
+        response->message = "Emergency stop activated";
+    } else {
+        RCLCPP_INFO(this->get_logger(), "Emergency stop deactivated");
+        response->message = "Emergency stop deactivated";
+    }
+    
+    response->success = true;
 }
 
 UR5DrawingNode::DrawingSequences UR5DrawingNode::loadDrawingSequences() {
@@ -180,7 +253,7 @@ UR5DrawingNode::DrawingSequences UR5DrawingNode::loadDrawingSequences() {
                 sequences.push_back(seq);
             }
         }
-#elif __has_include(<jsoncpp/json/json.h>)
+#else
         Json::Value root;
         Json::Reader reader;
         std::string file_content((std::istreambuf_iterator<char>(file)),
@@ -230,265 +303,220 @@ UR5DrawingNode::DrawingSequences UR5DrawingNode::loadDrawingSequences() {
     }
 }
 
-
-void UR5DrawingNode::setupCollisionEnvironment() {
-    RCLCPP_INFO(this->get_logger(), "Setting up collision environment...");
+void UR5DrawingNode::executeJointDrawing(const DrawingSequences& sequences) {
+    RCLCPP_INFO(this->get_logger(), "Starting joint-based drawing execution...");
     
-    // Clear existing collision objects
-    planning_scene_->removeCollisionObjects(planning_scene_->getKnownObjectNames());
+    // Move to home position first
+    moveToHome();
     
-    // Convert origin RPY to Quaternion
-    tf2::Quaternion q_origin;
-    // The origin_.orientation stores roll, pitch, yaw in this order
-    q_origin.setRPY(origin_.orientation[0], origin_.orientation[1], origin_.orientation[2]);
-    geometry_msgs::msg::Quaternion ros_q_origin = tf2::toMsg(q_origin);
-
-    // Add table as collision object
-    moveit_msgs::msg::CollisionObject table;
-    table.header.frame_id = move_group_->getPlanningFrame();
-    table.id = "table";
-    
-    shape_msgs::msg::SolidPrimitive table_primitive;
-    table_primitive.type = table_primitive.BOX;
-    table_primitive.dimensions.resize(3);
-    table_primitive.dimensions[table_primitive.BOX_X] = 0.5;
-    table_primitive.dimensions[table_primitive.BOX_Y] = 0.5;
-    table_primitive.dimensions[table_primitive.BOX_Z] = 0.1;
-    
-    geometry_msgs::msg::Pose table_pose;
-    table_pose.position.x = origin_.position[0];
-    table_pose.position.y = origin_.position[1];
-    table_pose.position.z = origin_.position[2] - 0.05; // Slightly below origin Z
-    table_pose.orientation = ros_q_origin; // Use the calculated quaternion
-    
-    table.primitives.push_back(table_primitive);
-    table.primitive_poses.push_back(table_pose);
-    table.operation = table.ADD;
-    
-    // Add paper as collision object
-    moveit_msgs::msg::CollisionObject paper;
-    paper.header.frame_id = move_group_->getPlanningFrame();
-    paper.id = "paper";
-    
-    shape_msgs::msg::SolidPrimitive paper_primitive;
-    paper_primitive.type = paper_primitive.BOX;
-    paper_primitive.dimensions.resize(3);
-    paper_primitive.dimensions[paper_primitive.BOX_X] = config_.physical.paper_width;
-    paper_primitive.dimensions[paper_primitive.BOX_Y] = config_.physical.paper_height;
-    paper_primitive.dimensions[paper_primitive.BOX_Z] = 0.002;
-    
-    geometry_msgs::msg::Pose paper_pose;
-    paper_pose.position.x = origin_.position[0];
-    paper_pose.position.y = origin_.position[1];
-    paper_pose.position.z = origin_.position[2] + 0.001; // Slightly above origin Z
-    paper_pose.orientation = ros_q_origin; // Use the calculated quaternion
-    
-    paper.primitives.push_back(paper_primitive);
-    paper.primitive_poses.push_back(paper_pose);
-    paper.operation = paper.ADD;
-    
-    // Apply collision objects
-    std::vector<moveit_msgs::msg::CollisionObject> collision_objects = {table, paper};
-    planning_scene_->addCollisionObjects(collision_objects);
-    
-    // Wait for collision objects to be added
-    std::this_thread::sleep_for(500ms);
-    
-    RCLCPP_INFO(this->get_logger(), "Collision environment setup complete with rotated table and paper");
-}
-
-void UR5DrawingNode::executeDrawing(const DrawingSequences& sequences) {
-    RCLCPP_INFO(this->get_logger(), "Starting drawing execution...");
-    
-    // // Move to home position
-    // moveToHome();
-    
-    // Lift pen to safe height above paper center
-    std::array<double, 2> center_point = {
-        static_cast<double>(config_.image.width) / 2.0,
-        static_cast<double>(config_.image.height) / 2.0
-    };
-    auto home_pos = imageToRobotFrame(center_point);
-    home_pos[2] += config_.physical.lift_offset;
-    moveToPose(home_pos);
-    
-    // Draw each sequence
-    for (size_t seq_idx = 0; seq_idx < sequences.size(); ++seq_idx) {
-        const auto& sequence = sequences[seq_idx];
+    // // Draw each sequence
+    // for (size_t seq_idx = 0; seq_idx < sequences.size(); ++seq_idx) {
+    //     if (isEmergencyStop()) {
+    //         RCLCPP_WARN(this->get_logger(), "Drawing stopped due to emergency stop");
+    //         break;
+    //     }
         
-        RCLCPP_INFO(this->get_logger(), 
-                   "Drawing sequence %zu/%zu with %zu points",
-                   seq_idx + 1, sequences.size(), sequence.size());
+    //     const auto& sequence = sequences[seq_idx];
         
-        // Create waypoints for this sequence
-        std::vector<geometry_msgs::msg::Pose> waypoints;
+    //     RCLCPP_INFO(this->get_logger(), 
+    //                "Drawing sequence %zu/%zu with %zu points",
+    //                seq_idx + 1, sequences.size(), sequence.size());
         
-        // Start with pen lifted
-        auto start_pos = imageToRobotFrame(sequence[0]);
-        auto lifted_start = start_pos;
-        lifted_start[2] += config_.physical.lift_offset;
-        waypoints.push_back(DrawingUtils::createPose(lifted_start, nullptr, &origin_.orientation));
+    //     // Create joint waypoints for this sequence
+    //     std::vector<JointPosition> waypoints;
         
-        // Lower pen to drawing height
-        waypoints.push_back(DrawingUtils::createPose(start_pos, nullptr, &origin_.orientation));
+    //     // Start with pen lifted above first point
+    //     auto start_joints = imageToJointAngles(sequence[0]);
+    //     auto lifted_start = DrawingUtils::addPenLift(start_joints, config_.joint_calibration.lift_offset_joints);
+    //     waypoints.push_back(lifted_start);
         
-        // Add all points in the sequence
-        for (const auto& point : sequence) {
-            auto point_pos = imageToRobotFrame(point);
-            waypoints.push_back(DrawingUtils::createPose(point_pos, nullptr, &origin_.orientation));
-        }
+    //     // Lower pen to drawing position
+    //     waypoints.push_back(start_joints);
         
-        // Lift pen at end of sequence
-        auto end_pos = imageToRobotFrame(sequence.back());
-        auto lifted_end = end_pos;
-        lifted_end[2] += config_.physical.lift_offset;
-        waypoints.push_back(DrawingUtils::createPose(lifted_end, nullptr, &origin_.orientation));
+    //     // Add all points in the sequence
+    //     for (const auto& point : sequence) {
+    //         auto point_joints = imageToJointAngles(point);
+    //         waypoints.push_back(point_joints);
+    //     }
         
-        // Execute Cartesian path
-        executeCartesianPath(waypoints);
-    }
+    //     // Lift pen at end of sequence
+    //     auto end_joints = imageToJointAngles(sequence.back());
+    //     auto lifted_end = DrawingUtils::addPenLift(end_joints, config_.joint_calibration.lift_offset_joints);
+    //     waypoints.push_back(lifted_end);
+        
+    //     // Execute joint path
+    //     executeJointPath(waypoints, false);
+    // }
     
     // // Return to home position
     // moveToHome();
-    RCLCPP_INFO(this->get_logger(), "Drawing completed!");
+    RCLCPP_INFO(this->get_logger(), "Joint-based drawing completed!");
 }
 
-DrawingUtils::Point3D UR5DrawingNode::imageToRobotFrame(const std::array<double, 2>& point) {
-    return DrawingUtils::imageToRobotFrame(
+JointPosition UR5DrawingNode::imageToJointAngles(const std::array<double, 2>& point) {
+    return DrawingUtils::imageToJointSpace(
         point,
         {config_.image.width, config_.image.height},
-        {config_.physical.paper_width, config_.physical.paper_height},
-        origin_
+        corner_positions_
     );
 }
 
-// void UR5DrawingNode::moveToHome() {
-//     RCLCPP_INFO(this->get_logger(), "Moving to home position...");
-    
-//     std::vector<double> joint_values(HOME_JOINT_ANGLES.begin(), HOME_JOINT_ANGLES.end());
-//     move_group_->setJointValueTarget(joint_values);
-    
-//     if (!executePlanWithRetry()) {
-//         throw std::runtime_error("Failed to move to home position");
-//     }
-// }
-
-void UR5DrawingNode::moveToPose(const DrawingUtils::Point3D& position) {
-    auto target_pose = DrawingUtils::createPose(position, nullptr, &origin_.orientation);
-    move_group_->setPoseTarget(target_pose);
-    
-    if (!executePlanWithRetry()) {
-        throw std::runtime_error("Failed to move to target pose");
-    }
-}
-
-void UR5DrawingNode::executeCartesianPath(const std::vector<geometry_msgs::msg::Pose>& waypoints) {
-    if (waypoints.size() < 2) {
-        RCLCPP_WARN(this->get_logger(), "Not enough waypoints for Cartesian path");
+void UR5DrawingNode::moveToJointPosition(const JointPosition& target_joints, bool with_interpolation) {
+    if (isEmergencyStop()) {
+        RCLCPP_WARN(this->get_logger(), "Movement cancelled due to emergency stop");
         return;
     }
     
-    // Plan Cartesian path
-    auto [fraction, trajectory] = DrawingUtils::planCartesianPath(
-        *move_group_,
-        waypoints,
-        config_.cartesian.eef_step,
-        config_.cartesian.jump_threshold,
-        config_.cartesian.avoid_collisions
+    std::vector<JointPosition> waypoints;
+    
+    if (with_interpolation) {
+        // Create interpolated path from current position
+        auto current_joints = getCurrentJointPosition();
+        waypoints = DrawingUtils::interpolateJointPath(
+            current_joints, target_joints, 
+            config_.interpolation.interpolation_points,
+            config_.interpolation.method
+        );
+    } else {
+        waypoints.push_back(target_joints);
+    }
+    
+    // Create and execute trajectory
+    auto trajectory = DrawingUtils::createJointTrajectory(
+        waypoints, joint_names_, 
+        config_.joint_trajectory.time_from_start,
+        config_.joint_trajectory.max_velocity_scaling
     );
     
-    // Check if path was planned successfully
-    if (fraction < 0.9) {
-        RCLCPP_WARN(this->get_logger(),
-                   "Only %.1f%% of the path was planned. Attempting to replan segments...",
-                   fraction * 100.0);
-        executeSegmentedPath(waypoints);
-    } else {
-        // Visualize and execute the plan
-        visualizePlan(trajectory);
-        if (!executePlanWithRetry(&trajectory)) {
-            throw std::runtime_error("Failed to execute Cartesian path");
-        }
+    if (!executeJointTrajectory(trajectory)) {
+        throw std::runtime_error("Failed to move to joint position");
     }
 }
 
-void UR5DrawingNode::executeSegmentedPath(const std::vector<geometry_msgs::msg::Pose>& waypoints) {
-    for (size_t i = 0; i < waypoints.size() - 1; ++i) {
-        std::vector<geometry_msgs::msg::Pose> segment = {waypoints[i], waypoints[i + 1]};
-        
-        // Plan segment
-        auto [fraction, trajectory] = DrawingUtils::planCartesianPath(
-            *move_group_,
-            segment,
-            config_.cartesian.eef_step,
-            config_.cartesian.jump_threshold,
-            config_.cartesian.avoid_collisions
-        );
-        
-        if (fraction >= 0.9) {
-            if (!executePlanWithRetry(&trajectory)) {
-                throw std::runtime_error("Failed to execute path segment");
-            }
-        } else {
-            RCLCPP_WARN(this->get_logger(),
-                       "Segment %zu/%zu planning failed (fraction=%.2f). Using point-to-point.",
-                       i + 1, waypoints.size() - 1, fraction);
-            
-            move_group_->setPoseTarget(waypoints[i + 1]);
-            if (!executePlanWithRetry()) {
-                throw std::runtime_error("Failed to execute point-to-point movement");
-            }
-        }
+bool UR5DrawingNode::executeJointTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory) {
+    if (isEmergencyStop()) {
+        RCLCPP_WARN(this->get_logger(), "Trajectory execution cancelled due to emergency stop");
+        return false;
     }
-}
-
-bool UR5DrawingNode::executePlanWithRetry(const moveit_msgs::msg::RobotTrajectory* trajectory) {
-    int attempts = 0;
     
-    while (attempts < config_.planning.replan_attempts) {
-        try {
-            moveit::planning_interface::MoveGroupInterface::Plan plan;
+    // Validate trajectory first
+    if (!validateTrajectory(trajectory)) {
+        RCLCPP_ERROR(this->get_logger(), "Trajectory validation failed");
+        return false;
+    }
+    
+    try {
+        if (joint_trajectory_action_client_->wait_for_action_server(std::chrono::seconds(1))) {
+            // Use action client
+            auto goal_msg = FollowJointTrajectoryAction::Goal();
+            goal_msg.trajectory = trajectory;
             
-            if (trajectory) {
-                plan.trajectory_ = *trajectory;
-                auto error_code = move_group_->execute(plan);
-                if (error_code == moveit::core::MoveItErrorCode::SUCCESS) {
-                    return true;
+            auto send_goal_options = rclcpp_action::Client<FollowJointTrajectoryAction>::SendGoalOptions();
+            
+            send_goal_options.result_callback = [this](const auto& result) {
+                if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+                    RCLCPP_DEBUG(this->get_logger(), "Joint trajectory executed successfully");
+                } else {
+                    RCLCPP_WARN(this->get_logger(), "Joint trajectory execution failed");
                 }
-            } else {
-                auto error_code = move_group_->plan(plan);
-                if (error_code == moveit::core::MoveItErrorCode::SUCCESS) {
-                    error_code = move_group_->execute(plan);
-                    if (error_code == moveit::core::MoveItErrorCode::SUCCESS) {
+            };
+            
+            send_goal_options.feedback_callback = [this](auto, const auto& feedback) {
+                // Optional: Handle feedback
+                (void)feedback;
+            };
+            
+            auto goal_handle_future = joint_trajectory_action_client_->async_send_goal(goal_msg, send_goal_options);
+            
+            // Wait for result
+            if (rclcpp::spin_until_future_complete(shared_from_this(), goal_handle_future) == 
+                rclcpp::FutureReturnCode::SUCCESS) {
+                
+                auto goal_handle = goal_handle_future.get();
+                if (goal_handle) {
+                    auto result_future = joint_trajectory_action_client_->async_get_result(goal_handle);
+                    
+                    if (rclcpp::spin_until_future_complete(shared_from_this(), result_future) == 
+                        rclcpp::FutureReturnCode::SUCCESS) {
                         return true;
                     }
                 }
             }
+            return false;
             
-            RCLCPP_WARN(this->get_logger(), 
-                       "Execution failed on attempt %d. Replanning...", attempts + 1);
-            attempts++;
+        } else {
+            // Fallback to topic publishing
+            RCLCPP_DEBUG(this->get_logger(), "Publishing joint trajectory to topic");
+            joint_trajectory_pub_->publish(trajectory);
             
-        } catch (const std::exception& e) {
-            RCLCPP_ERROR(this->get_logger(), "Execution error: %s", e.what());
-            attempts++;
+            // Wait for trajectory completion (estimate based on last point time)
+            if (!trajectory.points.empty()) {
+                auto last_point_time = trajectory.points.back().time_from_start;
+                std::this_thread::sleep_for(std::chrono::nanoseconds(last_point_time.nanosec) + 500ms);
+            }
+            return true;
         }
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to execute joint trajectory: %s", e.what());
+        return false;
     }
-    
-    RCLCPP_ERROR(this->get_logger(), 
-                "Failed to execute plan after %d attempts", config_.planning.replan_attempts);
-    return false;
 }
 
-void UR5DrawingNode::visualizePlan(const moveit_msgs::msg::RobotTrajectory& trajectory) {
+void UR5DrawingNode::executeJointPath(const std::vector<JointPosition>& waypoints, bool lift_pen_between) {
+    if (waypoints.empty()) {
+        RCLCPP_WARN(this->get_logger(), "Empty waypoint list");
+        return;
+    }
+    
+    for (size_t i = 0; i < waypoints.size(); ++i) {
+        if (isEmergencyStop()) {
+            RCLCPP_WARN(this->get_logger(), "Path execution stopped due to emergency stop");
+            break;
+        }
+        
+        // Move to waypoint
+        moveToJointPosition(waypoints[i], true);
+        
+        // Optional pen lift between waypoints
+        if (lift_pen_between && i < waypoints.size() - 1) {
+            auto lifted_pos = DrawingUtils::addPenLift(waypoints[i], config_.joint_calibration.lift_offset_joints);
+            moveToJointPosition(lifted_pos, false);
+        }
+    }
+}
+
+void UR5DrawingNode::moveToHome() {
+    RCLCPP_INFO(this->get_logger(), "Moving to home position...");
+    moveToJointPosition(config_.joint_calibration.home_position, true);
+}
+
+void UR5DrawingNode::performJointCalibration() {
+    RCLCPP_INFO(this->get_logger(), "Joint calibration should be performed using the calibration tool");
+    RCLCPP_INFO(this->get_logger(), "Run: ros2 run ur5_drawing joint_calibration");
+    
+    // This could also trigger the calibration tool or provide guidance
+    throw std::runtime_error("Use the joint_calibration for interactive calibration");
+}
+
+void UR5DrawingNode::visualizeJointTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory) {
+    if (!move_group_ || !robot_state_) {
+        RCLCPP_WARN(this->get_logger(), "MoveIt not initialized, cannot visualize trajectory");
+        return;
+    }
+    
+    // Convert joint trajectory to display trajectory
     moveit_msgs::msg::DisplayTrajectory display_trajectory;
     
-    // Convert current robot state to RobotState message
+    // Set trajectory start state
     moveit_msgs::msg::RobotState robot_state_msg;
-    moveit::core::robotStateToRobotStateMsg(*getCurrentState(), robot_state_msg);
+    moveit::core::robotStateToRobotStateMsg(*robot_state_, robot_state_msg);
     display_trajectory.trajectory_start = robot_state_msg;
     
-    display_trajectory.trajectory.push_back(trajectory);
+    // Convert joint trajectory to robot trajectory
+    moveit_msgs::msg::RobotTrajectory robot_trajectory;
+    robot_trajectory.joint_trajectory = trajectory;
+    
+    display_trajectory.trajectory.push_back(robot_trajectory);
     display_trajectory_pub_->publish(display_trajectory);
 }
 
@@ -501,38 +529,85 @@ void UR5DrawingNode::visualizeDrawing(const DrawingSequences& sequences) {
         
         // Create line strip marker for this sequence
         visualization_msgs::msg::Marker marker;
-        marker.header.frame_id = move_group_->getPlanningFrame();
+        marker.header.frame_id = "base_link";
         marker.header.stamp = this->get_clock()->now();
-        marker.ns = "drawing";
+        marker.ns = "joint_drawing";
         marker.id = marker_id++;
         marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
         marker.action = visualization_msgs::msg::Marker::ADD;
-        marker.scale.x = 0.01   ; // Line width
+        marker.scale.x = 0.01; // Line width
         marker.color.r = 0.0;
         marker.color.g = 0.0;
-        marker.color.b = 0.0;
+        marker.color.b = 1.0; // Blue for joint-based drawing
         marker.color.a = 1.0;
         
-        // Add points to the line strip
-        for (const auto& point : sequence) {
-            auto pos = imageToRobotFrame(point);
-            geometry_msgs::msg::Point p;
-            p.x = pos[0];
-            p.y = pos[1];
-            p.z = pos[2];
-            marker.points.push_back(p);
+        // Convert joint positions to Cartesian for visualization
+        // This requires forward kinematics, which we can do with MoveIt
+        if (move_group_ && robot_state_) {
+            for (const auto& point : sequence) {
+                auto joint_pos = imageToJointAngles(point);
+                
+                // Set robot state to joint position
+                robot_state_->setJointGroupPositions(config_.planning.planning_group, 
+                    std::vector<double>(joint_pos.begin(), joint_pos.end()));
+                
+                // Get end-effector pose
+                const auto& end_effector_state = robot_state_->getGlobalLinkTransform("tool0");
+                
+                geometry_msgs::msg::Point p;
+                p.x = end_effector_state.translation().x();
+                p.y = end_effector_state.translation().y();
+                p.z = end_effector_state.translation().z();
+                marker.points.push_back(p);
+            }
         }
         
-        marker_array.markers.push_back(marker);
+        if (!marker.points.empty()) {
+            marker_array.markers.push_back(marker);
+        }
     }
     
     // Publish marker array
     marker_pub_->publish(marker_array);
-    RCLCPP_INFO(this->get_logger(), "Drawing visualization published");
+    RCLCPP_INFO(this->get_logger(), "Joint-based drawing visualization published");
 }
 
-moveit::core::RobotStatePtr UR5DrawingNode::getCurrentState() {
-    return move_group_->getCurrentState();
+bool UR5DrawingNode::validateTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory) {
+    auto [min_limits, max_limits] = DrawingUtils::getUR5JointLimits();
+    
+    for (const auto& point : trajectory.points) {
+        if (point.positions.size() != 6) {
+            RCLCPP_ERROR(this->get_logger(), "Invalid trajectory point: expected 6 joints, got %zu", 
+                        point.positions.size());
+            return false;
+        }
+        
+        JointPosition joint_pos;
+        std::copy(point.positions.begin(), point.positions.begin() + 6, joint_pos.begin());
+        
+        if (!DrawingUtils::validateJointLimits(joint_pos, min_limits, max_limits)) {
+            RCLCPP_ERROR(this->get_logger(), "Trajectory point exceeds joint limits");
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+JointPosition UR5DrawingNode::getCurrentJointPosition() {
+    if (current_joint_state_ && current_joint_state_->position.size() >= 6) {
+        return current_joint_position_;
+    } else {
+        RCLCPP_WARN(this->get_logger(), "No current joint state available, using home position");
+        return config_.joint_calibration.home_position;
+    }
+}
+
+void UR5DrawingNode::updateCornerPositions() {
+    corner_positions_.bottom_left = config_.joint_calibration.corners.bottom_left;
+    corner_positions_.bottom_right = config_.joint_calibration.corners.bottom_right;
+    corner_positions_.top_left = config_.joint_calibration.corners.top_left;
+    corner_positions_.top_right = config_.joint_calibration.corners.top_right;
 }
 
 } // namespace ur5_drawing
@@ -542,7 +617,7 @@ int main(int argc, char** argv) {
     
     auto node = std::make_shared<ur5_drawing::UR5DrawingNode>();
     
-    // Use MultiThreadedExecutor to handle service calls while planning
+    // Use MultiThreadedExecutor to handle service calls while executing trajectories
     rclcpp::executors::MultiThreadedExecutor executor;
     executor.add_node(node);
     

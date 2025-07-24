@@ -8,11 +8,13 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/trigger.hpp>
-#include <geometry_msgs/msg/pose.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <std_srvs/srv/set_bool.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <moveit_msgs/msg/display_trajectory.hpp>
+#include <control_msgs/action/follow_joint_trajectory.hpp>
 
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
@@ -21,17 +23,17 @@
 #include <moveit/robot_state/robot_state.h>
 #include <moveit/robot_state/conversions.h>
 
-#include "./drawing_utils.hpp"
-#include "./config_loader.hpp"
+#include <rclcpp_action/rclcpp_action.hpp>
+
+#include "drawing_utils.hpp"
+#include "config_loader.hpp"
 
 #ifdef __has_include
 #if __has_include(<nlohmann/json.hpp>)
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
-#elif __has_include(<jsoncpp/json/json.h>)
-#include <jsoncpp/json/json.h>
 #else
-#error "No JSON library found. Please install nlohmann-json3-dev or libjsoncpp-dev"
+#include <jsoncpp/json/json.h>
 #endif
 #else
 #include <nlohmann/json.hpp>
@@ -41,12 +43,14 @@ using json = nlohmann::json;
 namespace ur5_drawing {
 
 /**
- * @brief Main drawing node for UR5 robot
+ * @brief Main joint-based drawing node for UR5 robot
  */
 class UR5DrawingNode : public rclcpp::Node {
 public:
     using DrawingSequence = std::vector<std::array<double, 2>>;
     using DrawingSequences = std::vector<DrawingSequence>;
+    using FollowJointTrajectoryAction = control_msgs::action::FollowJointTrajectory;
+    using JointTrajectoryActionClient = rclcpp_action::Client<FollowJointTrajectoryAction>;
 
     /**
      * @brief Constructor
@@ -60,15 +64,24 @@ public:
 
 private:
     // Configuration
-    DrawingConfig config_;
-    DrawingUtils::Origin origin_;
+    JointDrawingConfig config_;
+    CornerPositions corner_positions_;
 
     // ROS2 components
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr drawing_service_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calibration_service_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_stop_service_;
+    
     rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_trajectory_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+    rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr joint_trajectory_pub_;
+    
+    rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
 
-    // MoveIt components
+    // Action client for joint trajectory control
+    JointTrajectoryActionClient::SharedPtr joint_trajectory_action_client_;
+
+    // MoveIt components (used for visualization and planning)
     std::unique_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
     std::unique_ptr<moveit::planning_interface::PlanningSceneInterface> planning_scene_;
     
@@ -77,9 +90,16 @@ private:
     moveit::core::RobotModelPtr robot_model_;
     moveit::core::RobotStatePtr robot_state_;
 
+    // Joint state tracking
+    sensor_msgs::msg::JointState::SharedPtr current_joint_state_;
+    JointPosition current_joint_position_;
+    std::vector<std::string> joint_names_;
+
+    // Emergency stop flag
+    std::atomic<bool> emergency_stop_;
+
     // Callback group for parallel service handling
     rclcpp::CallbackGroup::SharedPtr callback_group_;
-
     rclcpp::TimerBase::SharedPtr moveit_init_timer_;
 
     /**
@@ -93,6 +113,11 @@ private:
     void initializeMoveIt();
 
     /**
+     * @brief Initialize joint trajectory action client
+     */
+    void initializeJointTrajectoryClient();
+
+    /**
      * @brief Service callback to start drawing
      */
     void startDrawingCallback(
@@ -101,79 +126,114 @@ private:
     );
 
     /**
+     * @brief Service callback for joint calibration
+     */
+    void calibrationCallback(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response
+    );
+
+    /**
+     * @brief Service callback for emergency stop
+     */
+    void emergencyStopCallback(
+        const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+        std::shared_ptr<std_srvs::srv::SetBool::Response> response
+    );
+
+    /**
+     * @brief Joint state callback
+     */
+    void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
+
+    /**
      * @brief Load drawing sequences from JSON file
      * @return Vector of drawing sequences
      */
     DrawingSequences loadDrawingSequences();
 
     /**
-     * @brief Setup collision environment
-     */
-    void setupCollisionEnvironment();
-
-    /**
-     * @brief Execute the complete drawing process
+     * @brief Execute the complete joint-based drawing process
      * @param sequences Drawing sequences to execute
      */
-    void executeDrawing(const DrawingSequences& sequences);
+    void executeJointDrawing(const DrawingSequences& sequences);
 
     /**
-     * @brief Convert image point to robot frame
+     * @brief Convert image point to joint angles
      * @param point Image coordinates [x, y]
-     * @return Robot coordinates [x, y, z]
+     * @return Joint angles in radians
      */
-    DrawingUtils::Point3D imageToRobotFrame(const std::array<double, 2>& point);
+    JointPosition imageToJointAngles(const std::array<double, 2>& point);
 
     /**
-     * @brief Move robot to home position
+     * @brief Move robot to joint position
+     * @param target_joints Target joint angles
+     * @param with_interpolation Whether to use interpolated path
+     */
+    void moveToJointPosition(const JointPosition& target_joints, bool with_interpolation = true);
+
+    /**
+     * @brief Execute joint trajectory using action client
+     * @param trajectory Joint trajectory to execute
+     * @return True if execution succeeded
+     */
+    bool executeJointTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory);
+
+    /**
+     * @brief Execute joint path through multiple waypoints
+     * @param waypoints Vector of joint positions to follow
+     * @param lift_pen_between Whether to lift pen between waypoints
+     */
+    void executeJointPath(const std::vector<JointPosition>& waypoints, bool lift_pen_between = false);
+
+    /**
+     * @brief Move to home position
      */
     void moveToHome();
 
     /**
-     * @brief Move robot to specific pose
-     * @param position Target position [x, y, z]
+     * @brief Perform joint calibration routine
      */
-    void moveToPose(const DrawingUtils::Point3D& position);
+    void performJointCalibration();
 
     /**
-     * @brief Execute Cartesian path through waypoints
-     * @param waypoints Vector of poses to follow
+     * @brief Visualize joint trajectory in RViz
+     * @param trajectory Joint trajectory to visualize
      */
-    void executeCartesianPath(const std::vector<geometry_msgs::msg::Pose>& waypoints);
-
-    /**
-     * @brief Execute path by breaking into smaller segments if needed
-     * @param waypoints Vector of poses to follow
-     */
-    void executeSegmentedPath(const std::vector<geometry_msgs::msg::Pose>& waypoints);
-
-    /**
-     * @brief Execute plan with retry logic
-     * @param trajectory Optional pre-planned trajectory
-     * @return True if execution succeeded
-     */
-    bool executePlanWithRetry(const moveit_msgs::msg::RobotTrajectory* trajectory = nullptr);
-
-    /**
-     * @brief Visualize planned trajectory in RViz
-     * @param trajectory Trajectory to visualize
-     */
-    void visualizePlan(const moveit_msgs::msg::RobotTrajectory& trajectory);
+    void visualizeJointTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory);
 
     /**
      * @brief Visualize complete drawing as markers
-     * @param sequences Drawing sequences to visualize
+     * @param sequences Drawing sequences to visualize  
      */
     void visualizeDrawing(const DrawingSequences& sequences);
 
     /**
-     * @brief Get current robot state safely
-     * @return Current robot state
+     * @brief Check if robot is in emergency stop state
      */
-    moveit::core::RobotStatePtr getCurrentState();
+    bool isEmergencyStop() const { return emergency_stop_.load(); }
 
-    // Home joint positions
-    static constexpr std::array<double, 6> HOME_JOINT_ANGLES = {0.0, -1.57, 0.0, -1.57, 0.0, 0.0};
+    /**
+     * @brief Validate joint trajectory for safety
+     * @param trajectory Trajectory to validate
+     * @return True if trajectory is safe
+     */
+    bool validateTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory);
+
+    /**
+     * @brief Get current joint position from joint state
+     * @return Current joint position
+     */
+    JointPosition getCurrentJointPosition();
+
+    /**
+     * @brief Update corner positions from configuration
+     */
+    void updateCornerPositions();
+
+    // UR5 joint limits (in radians)
+    static constexpr JointPosition UR5_MIN_LIMITS = {-6.28, -6.28, -3.14, -6.28, -6.28, -6.28};
+    static constexpr JointPosition UR5_MAX_LIMITS = {6.28, 6.28, 3.14, 6.28, 6.28, 6.28};
 };
 
 } // namespace ur5_drawing
