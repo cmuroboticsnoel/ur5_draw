@@ -155,13 +155,9 @@ def generate_launch_description():
         'robot_ip': network_config['robot_ip'],
         'use_fake_hardware': use_fake_hardware,
         'launch_rviz': 'false',  # We'll launch our own RViz
-        'initial_joint_controller': launch_config['initial_joint_controller'],
         'kinematics_params_file': CALIBRATION_FILE_PATH,
         'headless_mode': str(launch_config['headless_mode']).lower(),
         'reverse_ip': network_config['pc_ip'],
-        # Joint trajectory controller specific parameters
-        'controller_spawner_timeout': '20',
-        'activate_joint_controller': 'true'
     }
 
     # UR5 robot control launch

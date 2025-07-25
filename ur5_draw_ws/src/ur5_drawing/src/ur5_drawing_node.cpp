@@ -3,15 +3,16 @@
 #include <thread>
 #include <filesystem>
 #include <fcntl.h>
+#include <future>
 
 using namespace std::chrono_literals;
 
 namespace ur5_drawing {
 
-UR5DrawingNode::UR5DrawingNode() : Node("ur5_joint_drawing_node"), emergency_stop_(false) {
+UR5DrawingNode::UR5DrawingNode() : Node("ur5_drawing_node"), emergency_stop_(false) {
     // Initialize joint names for UR5
-    joint_names_ = {"shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", 
-                   "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"};
+    joint_names_ = {"shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", "wrist_1_joint", 
+               "wrist_2_joint", "wrist_3_joint"}; 
     
     // Create callback group for parallel service handling
     callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
@@ -42,13 +43,16 @@ UR5DrawingNode::UR5DrawingNode() : Node("ur5_joint_drawing_node"), emergency_sto
         std::bind(&UR5DrawingNode::jointStateCallback, this, std::placeholders::_1)
     );
     
-    // Create services
+    // Create services with proper callback group assignment
+    // auto service_options = rclcpp::ServiceOptions(); // This line is causing the error
+    // service_options.callback_group = callback_group_; // This line is causing the error
+    
     drawing_service_ = this->create_service<std_srvs::srv::Trigger>(
         "start_drawing",
         std::bind(&UR5DrawingNode::startDrawingCallback, this, 
                  std::placeholders::_1, std::placeholders::_2),
         rmw_qos_profile_services_default,
-        callback_group_
+        callback_group_ // Directly pass the callback group here
     );
     
     calibration_service_ = this->create_service<std_srvs::srv::Trigger>(
@@ -56,7 +60,7 @@ UR5DrawingNode::UR5DrawingNode() : Node("ur5_joint_drawing_node"), emergency_sto
         std::bind(&UR5DrawingNode::calibrationCallback, this,
                  std::placeholders::_1, std::placeholders::_2),
         rmw_qos_profile_services_default,
-        callback_group_
+        callback_group_ // Directly pass the callback group here
     );
     
     emergency_stop_service_ = this->create_service<std_srvs::srv::SetBool>(
@@ -64,7 +68,7 @@ UR5DrawingNode::UR5DrawingNode() : Node("ur5_joint_drawing_node"), emergency_sto
         std::bind(&UR5DrawingNode::emergencyStopCallback, this,
                  std::placeholders::_1, std::placeholders::_2),
         rmw_qos_profile_services_default,
-        callback_group_
+        callback_group_ // Directly pass the callback group here
     );
     
     // Initialize joint trajectory action client
@@ -115,6 +119,13 @@ void UR5DrawingNode::initializeMoveIt() {
         
         // Create planning scene interface
         planning_scene_ = std::make_unique<moveit::planning_interface::PlanningSceneInterface>();
+
+        move_group_->setGoalPositionTolerance(config_.planning.goal_position_tolerance);
+        move_group_->setGoalOrientationTolerance(config_.planning.goal_orientation_tolerance);
+        move_group_->setPlanningTime(config_.planning.planning_time);
+        move_group_->setNumPlanningAttempts(config_.planning.max_planning_attempts);
+        move_group_->setMaxVelocityScalingFactor(config_.safety.max_velocity);
+        move_group_->setMaxAccelerationScalingFactor(config_.safety.max_acceleration);
         
         RCLCPP_INFO(this->get_logger(), "MoveIt! initialized for visualization. Ready for joint-based drawing.");
         
@@ -309,47 +320,46 @@ void UR5DrawingNode::executeJointDrawing(const DrawingSequences& sequences) {
     // Move to home position first
     moveToHome();
     
-    // // Draw each sequence
-    // for (size_t seq_idx = 0; seq_idx < sequences.size(); ++seq_idx) {
-    //     if (isEmergencyStop()) {
-    //         RCLCPP_WARN(this->get_logger(), "Drawing stopped due to emergency stop");
-    //         break;
-    //     }
+    // Draw each sequence
+    for (size_t seq_idx = 0; seq_idx < sequences.size(); ++seq_idx) {
+        if (isEmergencyStop()) {
+            RCLCPP_WARN(this->get_logger(), "Drawing stopped due to emergency stop");
+            break;
+        }
         
-    //     const auto& sequence = sequences[seq_idx];
+        const auto& sequence = sequences[seq_idx];
         
-    //     RCLCPP_INFO(this->get_logger(), 
-    //                "Drawing sequence %zu/%zu with %zu points",
-    //                seq_idx + 1, sequences.size(), sequence.size());
+        RCLCPP_INFO(this->get_logger(), 
+                   "Drawing sequence %zu/%zu with %zu points",
+                   seq_idx + 1, sequences.size(), sequence.size());
+        // Create joint waypoints for this sequence
+        std::vector<JointPosition> waypoints;
         
-    //     // Create joint waypoints for this sequence
-    //     std::vector<JointPosition> waypoints;
+        // Start with pen lifted above first point
+        auto start_joints = imageToJointAngles(sequence[0]);
+        auto lifted_start = DrawingUtils::addPenLift(start_joints, config_.joint_calibration.lift_offset_joints);
+        waypoints.push_back(lifted_start);
         
-    //     // Start with pen lifted above first point
-    //     auto start_joints = imageToJointAngles(sequence[0]);
-    //     auto lifted_start = DrawingUtils::addPenLift(start_joints, config_.joint_calibration.lift_offset_joints);
-    //     waypoints.push_back(lifted_start);
+        // Lower pen to drawing position
+        waypoints.push_back(start_joints);
         
-    //     // Lower pen to drawing position
-    //     waypoints.push_back(start_joints);
+        // Add all points in the sequence
+        for (const auto& point : sequence) {
+            auto point_joints = imageToJointAngles(point);
+            waypoints.push_back(point_joints);
+        }
         
-    //     // Add all points in the sequence
-    //     for (const auto& point : sequence) {
-    //         auto point_joints = imageToJointAngles(point);
-    //         waypoints.push_back(point_joints);
-    //     }
+        // Lift pen at end of sequence
+        auto end_joints = imageToJointAngles(sequence.back());
+        auto lifted_end = DrawingUtils::addPenLift(end_joints, config_.joint_calibration.lift_offset_joints);
+        waypoints.push_back(lifted_end);
         
-    //     // Lift pen at end of sequence
-    //     auto end_joints = imageToJointAngles(sequence.back());
-    //     auto lifted_end = DrawingUtils::addPenLift(end_joints, config_.joint_calibration.lift_offset_joints);
-    //     waypoints.push_back(lifted_end);
-        
-    //     // Execute joint path
-    //     executeJointPath(waypoints, false);
-    // }
+        // Execute joint path
+        executeJointPath(waypoints, false);
+    }
     
-    // // Return to home position
-    // moveToHome();
+    // Return to home position
+    moveToHome();
     RCLCPP_INFO(this->get_logger(), "Joint-based drawing completed!");
 }
 
@@ -366,34 +376,83 @@ void UR5DrawingNode::moveToJointPosition(const JointPosition& target_joints, boo
         RCLCPP_WARN(this->get_logger(), "Movement cancelled due to emergency stop");
         return;
     }
-    
-    std::vector<JointPosition> waypoints;
-    
-    if (with_interpolation) {
-        // Create interpolated path from current position
-        auto current_joints = getCurrentJointPosition();
-        waypoints = DrawingUtils::interpolateJointPath(
-            current_joints, target_joints, 
-            config_.interpolation.interpolation_points,
-            config_.interpolation.method
-        );
-    } else {
-        waypoints.push_back(target_joints);
+
+    if (!move_group_) {
+        RCLCPP_ERROR(this->get_logger(), "MoveIt! MoveGroupInterface not initialized. Cannot plan trajectory.");
+        throw std::runtime_error("MoveIt! not ready for planning.");
     }
+
+    RCLCPP_INFO(this->get_logger(), "--- Planning and Executing Joint Trajectory (using MoveIt!) ---");
+
+    // Convert std::array to std::vector for MoveIt!
+    std::vector<double> moveit_target_joints(target_joints.begin(), target_joints.end());
     
-    // Create and execute trajectory
-    auto trajectory = DrawingUtils::createJointTrajectory(
-        waypoints, joint_names_, 
-        config_.joint_trajectory.time_from_start,
-        config_.joint_trajectory.max_velocity_scaling
-    );
-    
-    if (!executeJointTrajectory(trajectory)) {
-        throw std::runtime_error("Failed to move to joint position");
+    // 1. Set the joint value target
+    move_group_->setJointValueTarget(moveit_target_joints);
+
+    // 2. Plan the trajectory
+    moveit::planning_interface::MoveGroupInterface::Plan my_plan;
+    bool success = (move_group_->plan(my_plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS);
+
+    if (success) {
+        RCLCPP_INFO(this->get_logger(), "MoveIt! planning successful. Executing trajectory...");
+
+        // Log the first point of MoveIt!'s planned trajectory for sanity check
+        if (!my_plan.trajectory_.joint_trajectory.points.empty()) {
+            const auto& first_point = my_plan.trajectory_.joint_trajectory.points[0];
+            std::string joint_positions_str = "MoveIt! planned first point (degrees): [";
+            for (size_t i = 0; i < first_point.positions.size(); ++i) {
+                joint_positions_str += std::to_string((first_point.positions[i] * 180.0) / M_PI);
+                if (i < first_point.positions.size() - 1) {
+                    joint_positions_str += ", ";
+                }
+            }
+            joint_positions_str += "]";
+            RCLCPP_INFO(this->get_logger(), "%s", joint_positions_str.c_str());
+        }
+
+        // 3. Execute the trajectory using your existing executeJointTrajectory
+        // This will send the trajectory to the scaled_joint_trajectory_controller
+        if (!executeJointTrajectory(my_plan.trajectory_.joint_trajectory)) {
+            throw std::runtime_error("Failed to execute MoveIt! planned trajectory");
+        }
+    } else {
+        RCLCPP_ERROR(this->get_logger(), "MoveIt! planning failed for target joint position.");
+        throw std::runtime_error("MoveIt! planning failed.");
     }
 }
 
 bool UR5DrawingNode::executeJointTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory) {
+
+    if (trajectory.points.empty()) {
+        RCLCPP_WARN(this->get_logger(), "Attempted to execute an empty joint trajectory.");
+        return false;
+    }
+
+    RCLCPP_INFO(this->get_logger(), "--- Executing Joint Trajectory ---");
+    if (!trajectory.points.empty()) {
+        const auto& first_point = trajectory.points[0];
+        std::string joint_positions_str = "First point joint positions: [";
+        for (size_t i = 0; i < first_point.positions.size(); ++i) {
+            joint_positions_str += std::to_string((first_point.positions[i] * 180)/ M_PI);
+            if (i < first_point.positions.size() - 1) {
+                joint_positions_str += ", ";
+            }
+        }
+        joint_positions_str += "]";
+        RCLCPP_INFO(this->get_logger(), "%s", joint_positions_str.c_str());
+
+        std::string joint_names_str = "Joint names: [";
+        for (size_t i = 0; i < trajectory.joint_names.size(); ++i) {
+            joint_names_str += trajectory.joint_names[i];
+            if (i < trajectory.joint_names.size() - 1) {
+                joint_names_str += ", ";
+            }
+        }
+        joint_names_str += "]";
+        RCLCPP_INFO(this->get_logger(), "%s", joint_names_str.c_str());
+    }
+
     if (isEmergencyStop()) {
         RCLCPP_WARN(this->get_logger(), "Trajectory execution cancelled due to emergency stop");
         return false;
@@ -407,42 +466,43 @@ bool UR5DrawingNode::executeJointTrajectory(const trajectory_msgs::msg::JointTra
     
     try {
         if (joint_trajectory_action_client_->wait_for_action_server(std::chrono::seconds(1))) {
-            // Use action client
+            // Use action client with promise/future pattern to avoid executor conflicts
             auto goal_msg = FollowJointTrajectoryAction::Goal();
             goal_msg.trajectory = trajectory;
             
+            std::promise<bool> result_promise;
+            std::future<bool> result_future = result_promise.get_future();
+            
             auto send_goal_options = rclcpp_action::Client<FollowJointTrajectoryAction>::SendGoalOptions();
             
-            send_goal_options.result_callback = [this](const auto& result) {
-                if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
-                    RCLCPP_DEBUG(this->get_logger(), "Joint trajectory executed successfully");
-                } else {
-                    RCLCPP_WARN(this->get_logger(), "Joint trajectory execution failed");
-                }
+            send_goal_options.result_callback = [&result_promise](const auto& result) {
+                bool success = (result.code == rclcpp_action::ResultCode::SUCCEEDED);
+                result_promise.set_value(success);
             };
             
             send_goal_options.feedback_callback = [this](auto, const auto& feedback) {
                 // Optional: Handle feedback
                 (void)feedback;
+                RCLCPP_DEBUG(this->get_logger(), "Trajectory execution in progress");
             };
             
+            // Send goal asynchronously
             auto goal_handle_future = joint_trajectory_action_client_->async_send_goal(goal_msg, send_goal_options);
             
-            // Wait for result
-            if (rclcpp::spin_until_future_complete(shared_from_this(), goal_handle_future) == 
-                rclcpp::FutureReturnCode::SUCCESS) {
-                
-                auto goal_handle = goal_handle_future.get();
-                if (goal_handle) {
-                    auto result_future = joint_trajectory_action_client_->async_get_result(goal_handle);
-                    
-                    if (rclcpp::spin_until_future_complete(shared_from_this(), result_future) == 
-                        rclcpp::FutureReturnCode::SUCCESS) {
-                        return true;
-                    }
+            // Wait for result with timeout
+            auto status = result_future.wait_for(std::chrono::seconds(30));
+            if (status == std::future_status::ready) {
+                bool success = result_future.get();
+                if (success) {
+                    RCLCPP_DEBUG(this->get_logger(), "Joint trajectory executed successfully");
+                } else {
+                    RCLCPP_WARN(this->get_logger(), "Joint trajectory execution failed");
                 }
+                return success;
+            } else {
+                RCLCPP_ERROR(this->get_logger(), "Joint trajectory execution timed out");
+                return false;
             }
-            return false;
             
         } else {
             // Fallback to topic publishing
@@ -452,7 +512,9 @@ bool UR5DrawingNode::executeJointTrajectory(const trajectory_msgs::msg::JointTra
             // Wait for trajectory completion (estimate based on last point time)
             if (!trajectory.points.empty()) {
                 auto last_point_time = trajectory.points.back().time_from_start;
-                std::this_thread::sleep_for(std::chrono::nanoseconds(last_point_time.nanosec) + 500ms);
+                auto duration = std::chrono::seconds(last_point_time.sec) + 
+                               std::chrono::nanoseconds(last_point_time.nanosec) + 500ms;
+                std::this_thread::sleep_for(duration);
             }
             return true;
         }

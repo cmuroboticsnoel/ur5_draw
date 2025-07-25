@@ -56,31 +56,31 @@ public:
 
         // Create service servers for each calibration step
         home_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/joint_calibration/calibrate_home_position",
+            "/calibrate_home_position",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "HOME_POSITION")
         );
         origin_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/joint_calibration/calibrate_origin_position",
+            "/calibrate_origin_position",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "ORIGIN_POSITION")
         );
         bottom_left_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/joint_calibration/calibrate_bottom_left",
+            "/calibrate_bottom_left",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "BOTTOM_LEFT")
         );
         bottom_right_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/joint_calibration/calibrate_bottom_right",
+            "/calibrate_bottom_right",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "BOTTOM_RIGHT")
         );
         top_left_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/joint_calibration/calibrate_top_left",
+            "/calibrate_top_left",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "TOP_LEFT")
         );
         top_right_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/joint_calibration/calibrate_top_right",
+            "/calibrate_top_right",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "TOP_RIGHT")
         );
         save_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/joint_calibration/save_all_calibration",
+            "/save_all_calibration",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "SAVE_ALL")
         );
         

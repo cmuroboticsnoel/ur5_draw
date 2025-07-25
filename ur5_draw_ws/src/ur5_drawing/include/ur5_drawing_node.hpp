@@ -165,6 +165,11 @@ private:
      */
     JointPosition imageToJointAngles(const std::array<double, 2>& point);
 
+    /** 
+     * @brief function to update frame transforms
+     */
+    void updateFrameTransforms();
+
     /**
      * @brief Move robot to joint position
      * @param target_joints Target joint angles

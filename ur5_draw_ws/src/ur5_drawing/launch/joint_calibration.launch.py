@@ -47,7 +47,7 @@ def get_default_joint_config():
         'physical': {
             'paper_width': 0.2794,
             'paper_height': 0.2159,
-            'drawing_speed': 0.25
+            'drawing_speed': 0.15
         },
         'image': {
             'width': 800,
@@ -61,8 +61,8 @@ def get_default_joint_config():
             'goal_joint_tolerance': 0.01
         },
         'joint_trajectory': {
-            'max_velocity_scaling': 0.3,
-            'max_acceleration_scaling': 0.2,
+            'max_velocity_scaling': 0.1,
+            'max_acceleration_scaling': 0.1,
             'joint_velocity_limits': [1.0, 1.0, 1.5, 2.0, 2.0, 2.0],
             'time_from_start': 2.0
         },

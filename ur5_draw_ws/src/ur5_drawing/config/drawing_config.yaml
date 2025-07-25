@@ -4,48 +4,48 @@ network:
   ur_type: ur5
 joint_calibration:
   home_position:
-    - -1.1802542845355433
     - 1.344386100769043
     - -1.7067692915545862
     - -1.5627010504352015
     - -1.529541317616598
     - 0.78895902633666992
+    - -1.1802542845355433
   origin_position:
-    - -1.1035946051227015
     - 1.5698413848876953
     - -2.0384495894061487
     - -1.5627849737750452
     - -1.5299242178546351
     - 0.78729432821273804
+    - -1.1035946051227015
   corners:
     bottom_left:
-      - -1.2201936880694788
       - 1.7252345085144043
       - -2.0446127096759241
       - -1.5599711577044886
       - -1.5297325293170374
       - 1.0346266031265259
+      - -1.2201936880694788
     bottom_right:
-      - -1.3337157408343714
       - 1.8881058692932129
       - -2.1039713064776819
       - -1.5454347769366663
       - -1.5296486059771937
       - 0.51123958826065063
+      - -1.3337157408343714
     top_left:
-      - -0.79268008867372686
       - 1.0511751174926758
       - -1.8357813994037073
       - -1.548715893422262
       - -1.5290263334857386
       - 0.96529978513717651
+      - -0.79268008867372686
     top_right:
-      - -0.8611987272845667
       - 1.174436092376709
       - -1.8720548788653772
       - -1.5715854803668421
       - -1.5299962202655237
       - 0.61090075969696045
+      - -0.8611987272845667
   lift_offset_joints:
     - -0.076659679412841797
     - -0.22545528411865234
@@ -56,7 +56,7 @@ joint_calibration:
 physical:
   paper_width: 0.2794
   paper_height: 0.2159
-  drawing_speed: 0.25
+  drawing_speed: 0.1
 image:
   width: 800
   height: 600
@@ -65,20 +65,20 @@ planning:
   max_planning_attempts: 5
   planning_time: 5.0
   replan_attempts: 3
-  goal_joint_tolerance: 0.01
+  goal_joint_tolerance: 0.20
   goal_position_tolerance: 0.001
-  goal_orientation_tolerance: 0.01
+  goal_orientation_tolerance: 0.001
 joint_trajectory:
-  max_velocity_scaling: 0.3
-  max_acceleration_scaling: 0.2
+  max_velocity_scaling: 0.1
+  max_acceleration_scaling: 0.1
   joint_velocity_limits: [1.0, 1.0, 1.5, 2.0, 2.0, 2.0]
-  time_from_start: 2.0
+  time_from_start: 4.0
 interpolation:
   method: linear
-  interpolation_points: 10
+  interpolation_points: 50
 safety:
-  max_velocity: 0.5
-  max_acceleration: 1.0
+  max_velocity: 0.1
+  max_acceleration: 0.1
   emergency_stop_deceleration: 3.0
 collision:
   object_padding: 0.01
