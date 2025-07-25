@@ -1,6 +1,8 @@
 #include "../include/drawing_utils.hpp"
 #include <cmath>
 #include <algorithm>
+#include <iostream>
+#include <iomanip>
 
 namespace ur5_drawing {
 
@@ -13,6 +15,30 @@ JointPosition DrawingUtils::imageToJointSpace(
     double y_img = point[1];
     int img_width = image_size[0];
     int img_height = image_size[1];
+    
+    // Validate input data
+    if (img_width <= 0 || img_height <= 0) {
+        std::cerr << "ERROR: Invalid image dimensions: " << img_width << "x" << img_height << std::endl;
+        
+        // Return a default safe position rather than using uninitialized values
+        JointPosition safe_position = {0.0, -1.57, 0.0, -1.57, 0.0, 0.0}; // Common "home" position
+        return safe_position;
+    }
+    
+    // Check if corners are valid (no NaN or infinity values)
+    for (int i = 0; i < 6; ++i) {
+        if (std::isnan(corners.bottom_left[i]) || std::isinf(corners.bottom_left[i]) ||
+            std::isnan(corners.bottom_right[i]) || std::isinf(corners.bottom_right[i]) ||
+            std::isnan(corners.top_left[i]) || std::isinf(corners.top_left[i]) ||
+            std::isnan(corners.top_right[i]) || std::isinf(corners.top_right[i])) {
+            
+            std::cerr << "ERROR: Invalid corner value detected at joint index " << i << std::endl;
+            
+            // Return a default safe position
+            JointPosition safe_position = {0.0, -1.57, 0.0, -1.57, 0.0, 0.0};
+            return safe_position;
+        }
+    }
     
     // Normalize image coordinates (0-1)
     double u = x_img / static_cast<double>(img_width);
@@ -32,6 +58,13 @@ JointPosition DrawingUtils::imageToJointSpace(
             corners.top_right[joint],     // (1,1)
             u, v
         );
+        
+        // Validate result to ensure no NaN or infinity values
+        if (std::isnan(result[joint]) || std::isinf(result[joint])) {
+            std::cerr << "WARNING: Calculated NaN or infinity for joint " << joint << std::endl;
+            std::cerr << "  Using bottom_left value as fallback" << std::endl;
+            result[joint] = corners.bottom_left[joint];
+        }
     }
     
     return result;
@@ -160,6 +193,73 @@ std::pair<JointPosition, JointPosition> DrawingUtils::getUR5JointLimits() {
     JointPosition max_limits = {6.28, 6.28, 3.14, 6.28, 6.28, 6.28};
     
     return std::make_pair(min_limits, max_limits);
+}
+
+void DrawingUtils::debugInterpolation(
+    const Point2D& point,
+    const ImageSize& image_size,
+    const CornerPositions& corners) {
+    
+    double x_img = point[0];
+    double y_img = point[1];
+    int img_width = image_size[0];
+    int img_height = image_size[1];
+    
+    // Normalize image coordinates (0-1)
+    double u = x_img / static_cast<double>(img_width);
+    double v = 1.0 - (y_img / static_cast<double>(img_height)); // Flip Y-axis
+    
+    // Clamp to valid range
+    u = std::clamp(u, 0.0, 1.0);
+    v = std::clamp(v, 0.0, 1.0);
+    
+    std::cout << "===== DEBUG INTERPOLATION =====" << std::endl;
+    std::cout << "Input point [" << x_img << ", " << y_img << "]" << std::endl;
+    std::cout << "Image size: " << img_width << "x" << img_height << std::endl;
+    std::cout << "Normalized coordinates (u,v): [" << u << ", " << v << "]" << std::endl;
+    std::cout << std::endl;
+    
+    // Compute and display interpolated values for each joint
+    JointPosition result;
+    std::cout << "Joint | Bottom Left | Bottom Right | Top Left | Top Right | Result" << std::endl;
+    std::cout << "-------------------------------------------------------------" << std::endl;
+    
+    for (int joint = 0; joint < 6; ++joint) {
+        double bl = corners.bottom_left[joint];
+        double br = corners.bottom_right[joint];
+        double tl = corners.top_left[joint];
+        double tr = corners.top_right[joint];
+        
+        // Calculate bottom and top interpolation first
+        double bottom = lerp(bl, br, u);
+        double top = lerp(tl, tr, u);
+        
+        // Then interpolate between bottom and top
+        result[joint] = lerp(bottom, top, v);
+        
+        std::cout << "  " << joint << "  | " 
+                  << std::fixed << std::setprecision(4) << bl << " | " 
+                  << std::fixed << std::setprecision(4) << br << " | "
+                  << std::fixed << std::setprecision(4) << tl << " | "
+                  << std::fixed << std::setprecision(4) << tr << " | "
+                  << std::fixed << std::setprecision(4) << result[joint] << std::endl;
+    }
+    
+    std::cout << std::endl;
+    std::cout << "Final joint positions (radians): [";
+    for (int i = 0; i < 6; ++i) {
+        std::cout << std::fixed << std::setprecision(4) << result[i];
+        if (i < 5) std::cout << ", ";
+    }
+    std::cout << "]" << std::endl;
+    
+    std::cout << "Final joint positions (degrees): [";
+    for (int i = 0; i < 6; ++i) {
+        std::cout << std::fixed << std::setprecision(2) << (result[i] * 180.0 / M_PI);
+        if (i < 5) std::cout << ", ";
+    }
+    std::cout << "]" << std::endl;
+    std::cout << "===============================" << std::endl;
 }
 
 // Private helper functions

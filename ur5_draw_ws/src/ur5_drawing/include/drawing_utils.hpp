@@ -139,6 +139,18 @@ public:
      * @return Pair of (min_limits, max_limits) for UR5
      */
     static std::pair<JointPosition, JointPosition> getUR5JointLimits();
+    
+    /**
+     * @brief Debug interpolation calculation for image point
+     * @param point Image coordinates
+     * @param image_size Image dimensions
+     * @param corners Corner joint positions
+     */
+    static void debugInterpolation(
+        const Point2D& point,
+        const ImageSize& image_size,
+        const CornerPositions& corners
+    );
 
 private:
     /**

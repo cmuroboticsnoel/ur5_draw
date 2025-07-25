@@ -56,31 +56,31 @@ public:
 
         // Create service servers for each calibration step
         home_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/calibrate_home_position",
+            "/home_position",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "HOME_POSITION")
         );
         origin_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/calibrate_origin_position",
+            "/origin_position",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "ORIGIN_POSITION")
         );
         bottom_left_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/calibrate_bottom_left",
+            "/bottom_left",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "BOTTOM_LEFT")
         );
         bottom_right_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/calibrate_bottom_right",
+            "/bottom_right",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "BOTTOM_RIGHT")
         );
         top_left_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/calibrate_top_left",
+            "/top_left",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "TOP_LEFT")
         );
         top_right_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/calibrate_top_right",
+            "/top_right",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "TOP_RIGHT")
         );
         save_cal_service_ = this->create_service<std_srvs::srv::Trigger>(
-            "/save_all_calibration",
+            "/save_all",
             std::bind(&JointCalibration::handleCalibrationService, this, std::placeholders::_1, std::placeholders::_2, "SAVE_ALL")
         );
         
@@ -89,6 +89,8 @@ public:
     }
 
 private:
+    std::vector<std::string> joint_names_ = {"shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"};
+
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
     rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr emergency_stop_client_;
     sensor_msgs::msg::JointState::SharedPtr current_joint_state_;
@@ -106,6 +108,37 @@ private:
 
     void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {
         current_joint_state_ = msg;
+
+        // Temporary array to hold reordered positions
+        std::array<double, 6> reordered_positions;
+        bool all_found = true;
+
+        // Find each joint in received message and reorder
+        for (size_t i = 0; i < joint_names_.size(); i++) {
+            const std::string& target_joint = joint_names_[i];
+            auto it = std::find(msg->name.begin(), msg->name.end(), target_joint);
+            
+            if (it != msg->name.end()) {
+                size_t index = std::distance(msg->name.begin(), it);
+                if (index < msg->position.size()) {
+                    reordered_positions[i] = msg->position[index];
+                } else {
+                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                        "Position data missing for joint '%s'", target_joint.c_str());
+                    all_found = false;
+                }
+            } else {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                    "Joint '%s' not found in joint state message", target_joint.c_str());
+                all_found = false;
+            }
+        }
+
+        // Only update current position if all joints were found with valid data
+        if (all_found) {
+            current_joint_state_->name = joint_names_;
+            current_joint_state_->set__position(std::vector<double>(reordered_positions.begin(), reordered_positions.end()));
+        }
     }
 
     void handleCalibrationService(
@@ -333,7 +366,7 @@ int main(int argc, char** argv) {
     RCLCPP_INFO(calibration_tool->get_logger(), "This node is now waiting for service calls to calibrate joint positions.");
     RCLCPP_INFO(calibration_tool->get_logger(), "Instructions:");
     RCLCPP_INFO(calibration_tool->get_logger(), "- Manually move the robot to each required position.");
-    RCLCPP_INFO(calibration_tool->get_logger(), "- Call the corresponding ROS 2 service (e.g., 'ros2 service call /calibrate_home_position std_srvs/srv/Trigger {}') to save the current position.");
+    RCLCPP_INFO(calibration_tool->get_logger(), "- Call the corresponding ROS 2 service (e.g., 'ros2 service call /home_position std_srvs/srv/Trigger {}') to save the current position.");
     RCLCPP_INFO(calibration_tool->get_logger(), "- Once all positions are set, call '/save_all_calibration' to save the complete configuration.");
     RCLCPP_INFO(calibration_tool->get_logger(), "- Make sure the robot is in MANUAL MODE!\n");
 

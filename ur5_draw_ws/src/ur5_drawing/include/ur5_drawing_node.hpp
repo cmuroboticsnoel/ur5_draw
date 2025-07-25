@@ -185,6 +185,13 @@ private:
     bool executeJointTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory);
 
     /**
+     * @brief Fix invalid trajectories by replacing all-zeros points with current state
+     * @param trajectory The trajectory to fix
+     * @return Fixed trajectory
+     */
+    trajectory_msgs::msg::JointTrajectory fixTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory);
+
+    /**
      * @brief Execute joint path through multiple waypoints
      * @param waypoints Vector of joint positions to follow
      * @param lift_pen_between Whether to lift pen between waypoints

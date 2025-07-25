@@ -1,6 +1,7 @@
 import cv2
 import os
 import json
+import shutil
 from simple_term_menu import TerminalMenu
 import numpy as np
 from edge_processing import (
@@ -69,7 +70,11 @@ def export_to_json(sequences, image_path):
     
     # Expand user path and ensure it exists
     output_path = os.path.expanduser(IMAGE_DESCRIPTION_PATH)
-    os.makedirs(output_path, exist_ok=True)
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+    else:
+        shutil.rmtree(output_path)
+        os.makedirs(output_path)
     
     # Prepare data for JSON export
     # Ensure all points are in the correct format [x, y] as regular Python lists

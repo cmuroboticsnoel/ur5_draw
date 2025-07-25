@@ -26,79 +26,11 @@ def load_drawing_config(config_path):
     except FileNotFoundError:
         print(f"✗ Warning: Configuration file not found: {config_file}")
         print("  Using default configuration values.")
-        return get_default_joint_config()
+        return None
     except yaml.YAMLError as e:
         print(f"✗ Error parsing YAML configuration: {e}")
-        print("  Using default configuration values.")
-        return get_default_joint_config()
+        return None
 
-def get_default_joint_config():
-    """Return default joint-based configuration if config file is not available"""
-    return {
-        'network': {
-            'robot_ip': '192.168.1.102',
-            'pc_ip': '192.168.1.101',
-            'ur_type': 'ur5'
-        },
-        'joint_calibration': {
-            'home_position': [0.0, -1.57, 0.0, -1.57, 0.0, 0.0],
-            'origin_position': [0.0, -1.2, 0.5, -1.57, 0.0, 0.0],
-            'corners': {
-                'bottom_left': [-0.3, -1.1, 0.4, -1.5, 0.1, 0.0],
-                'bottom_right': [0.3, -1.1, 0.4, -1.5, -0.1, 0.0],
-                'top_left': [-0.3, -1.3, 0.6, -1.6, 0.1, 0.0],
-                'top_right': [0.3, -1.3, 0.6, -1.6, -0.1, 0.0]
-            },
-            'lift_offset_joints': [0.0, -0.05, 0.0, -0.05, 0.0, 0.0]
-        },
-        'physical': {
-            'paper_width': 0.2794,
-            'paper_height': 0.2159,
-            'drawing_speed': 0.25
-        },
-        'image': {
-            'width': 800,
-            'height': 600
-        },
-        'planning': {
-            'planning_group': 'ur_manipulator',
-            'max_planning_attempts': 5,
-            'planning_time': 5.0,
-            'replan_attempts': 3,
-            'goal_joint_tolerance': 0.01
-        },
-        'joint_trajectory': {
-            'max_velocity_scaling': 0.3,
-            'max_acceleration_scaling': 0.2,
-            'joint_velocity_limits': [1.0, 1.0, 1.5, 2.0, 2.0, 2.0],
-            'time_from_start': 2.0
-        },
-        'interpolation': {
-            'method': 'linear',
-            'interpolation_points': 10
-        },
-        'files': {
-            'drawing_sequences': 'image_description.json',
-            'rviz_config': 'drawing.rviz',
-            'calibration_file': 'calibration.yaml',
-            'joint_calibration_file': 'joint_calibration.yaml'
-        },
-        'launch': {
-            'use_fake_hardware': False,
-            'headless_mode': True,
-            'initial_joint_controller': 'scaled_joint_trajectory_controller',
-            'default_use_rviz': True,
-            'default_use_sim_time': False
-        },
-        'safety': {
-            'max_velocity': 0.5,
-            'max_acceleration': 1.0,
-            'emergency_stop_deceleration': 3.0
-        },
-        'collision': {
-            'object_padding': 0.01
-        }
-    }
 
 def generate_launch_description():
     # Get package directories
@@ -110,6 +42,9 @@ def generate_launch_description():
     # Load joint drawing configuration
     config_path = os.path.expanduser('~/ur5_draw/ur5_draw_ws/src/ur5_drawing/config')
     config = load_drawing_config(config_path)
+    if not config:
+        print("✗ EXITING.")
+        return
 
     # Extract configuration values
     network_config = config['network']
@@ -174,13 +109,6 @@ def generate_launch_description():
         'launch_rviz': 'false',  # We'll launch our own RViz
         'ur_type': network_config['ur_type'],
         'warehouse_sqlite_path': os.path.expanduser('~/drawing_moveit_warehouse.sqlite'),
-        # Use your custom MoveIt configuration files
-        'moveit_config_file': os.path.join(MOVEIT_CONFIG_PATH, 'ur.srdf.xacro'),
-        'kinematics_config_file': os.path.join(MOVEIT_CONFIG_PATH, 'kinematics.yaml'),
-        'joint_limits_config_file': os.path.join(MOVEIT_CONFIG_PATH, 'joint_limits.yaml'),
-        'controllers_config_file': os.path.join(MOVEIT_CONFIG_PATH, 'controllers.yaml'),
-        'ompl_planning_config_file': os.path.join(MOVEIT_CONFIG_PATH, 'ompl_planning.yaml'),
-        'servo_config_file': os.path.join(MOVEIT_CONFIG_PATH, 'ur_servo.yaml')
     }
 
     moveit_launch = IncludeLaunchDescription(

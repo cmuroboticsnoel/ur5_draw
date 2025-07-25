@@ -54,7 +54,7 @@ planner_configs:
     type: geometric::PRMstar
 ur_manipulator:
   planner_configs:
-    - SBLkConfigDefault
+    - SBLkConfigDefault 
     - ESTkConfigDefault
     - LBKPIECEkConfigDefault
     - BKPIECEkConfigDefault

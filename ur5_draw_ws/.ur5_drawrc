@@ -1,2 +1,3 @@
 ROS_WS=${HOME}/ur5_draw/ur5_draw_ws
 alias sros='source /opt/ros/humble/setup.bash && source /home/robots/ur5_draw/ur5_draw_ws/install/setup.bash'
+alias k9='kill -9 %'

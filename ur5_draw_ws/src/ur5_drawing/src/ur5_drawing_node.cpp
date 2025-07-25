@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fcntl.h>
 #include <future>
+#include <cmath>
 
 using namespace std::chrono_literals;
 
@@ -44,9 +45,6 @@ UR5DrawingNode::UR5DrawingNode() : Node("ur5_drawing_node"), emergency_stop_(fal
     );
     
     // Create services with proper callback group assignment
-    // auto service_options = rclcpp::ServiceOptions(); // This line is causing the error
-    // service_options.callback_group = callback_group_; // This line is causing the error
-    
     drawing_service_ = this->create_service<std_srvs::srv::Trigger>(
         "start_drawing",
         std::bind(&UR5DrawingNode::startDrawingCallback, this, 
@@ -149,12 +147,35 @@ void UR5DrawingNode::initializeJointTrajectoryClient() {
 
 void UR5DrawingNode::jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {
     current_joint_state_ = msg;
-    
-    // Update current joint position
-    if (msg->position.size() >= 6) {
-        for (int i = 0; i < 6; ++i) {
-            current_joint_position_[i] = msg->position[i];
+
+    // Temporary array to hold reordered positions
+    std::array<double, 6> reordered_positions;
+    bool all_found = true;
+
+    // Find each joint in received message and reorder
+    for (size_t i = 0; i < joint_names_.size(); i++) {
+        const std::string& target_joint = joint_names_[i];
+        auto it = std::find(msg->name.begin(), msg->name.end(), target_joint);
+        
+        if (it != msg->name.end()) {
+            size_t index = std::distance(msg->name.begin(), it);
+            if (index < msg->position.size()) {
+                reordered_positions[i] = msg->position[index];
+            } else {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                    "Position data missing for joint '%s'", target_joint.c_str());
+                all_found = false;
+            }
+        } else {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "Joint '%s' not found in joint state message", target_joint.c_str());
+            all_found = false;
         }
+    }
+
+    // Only update current position if all joints were found with valid data
+    if (all_found) {
+        current_joint_position_ = reordered_positions;
     }
 }
 
@@ -306,6 +327,39 @@ UR5DrawingNode::DrawingSequences UR5DrawingNode::loadDrawingSequences() {
         RCLCPP_INFO(this->get_logger(), "Loaded %zu sequences from %s", 
                    sequences.size(), drawing_file.c_str());
         
+        // Print sample sequence data for debugging
+        if (!sequences.empty() && !sequences[0].empty()) {
+            const auto& first_seq = sequences[0];
+            RCLCPP_INFO(this->get_logger(), "Sample sequence (first 3 points and last point):");
+            
+            for (size_t i = 0; i < std::min(size_t(3), first_seq.size()); ++i) {
+                RCLCPP_INFO(this->get_logger(), "  Point %zu: [%.2f, %.2f]", 
+                          i, first_seq[i][0], first_seq[i][1]);
+            }
+            
+            if (first_seq.size() > 3) {
+                RCLCPP_INFO(this->get_logger(), "  Point %zu (last): [%.2f, %.2f]", 
+                          first_seq.size()-1, first_seq.back()[0], first_seq.back()[1]);
+            }
+            
+            // Check if points are within image dimensions
+            bool all_in_bounds = true;
+            for (const auto& seq : sequences) {
+                for (const auto& point : seq) {
+                    if (point[0] < 0 || point[0] >= config_.image.width || 
+                        point[1] < 0 || point[1] >= config_.image.height) {
+                        RCLCPP_WARN(this->get_logger(), "Point [%.2f, %.2f] is outside image bounds [0,%d]x[0,%d]",
+                                   point[0], point[1], config_.image.width, config_.image.height);
+                        all_in_bounds = false;
+                    }
+                }
+            }
+            
+            if (!all_in_bounds) {
+                RCLCPP_WARN(this->get_logger(), "Some points are outside the image bounds! This may cause invalid joint calculations.");
+            }
+        }
+        
         return sequences;
         
     } catch (const std::exception& e) {
@@ -332,12 +386,34 @@ void UR5DrawingNode::executeJointDrawing(const DrawingSequences& sequences) {
         RCLCPP_INFO(this->get_logger(), 
                    "Drawing sequence %zu/%zu with %zu points",
                    seq_idx + 1, sequences.size(), sequence.size());
+        
+        // Print first and last point of sequence for debugging
+        if (!sequence.empty()) {
+            RCLCPP_INFO(this->get_logger(), "First point in sequence: [%.2f, %.2f]", 
+                      sequence.front()[0], sequence.front()[1]);
+            RCLCPP_INFO(this->get_logger(), "Last point in sequence: [%.2f, %.2f]", 
+                      sequence.back()[0], sequence.back()[1]);
+        }
+        
         // Create joint waypoints for this sequence
         std::vector<JointPosition> waypoints;
         
         // Start with pen lifted above first point
         auto start_joints = imageToJointAngles(sequence[0]);
         auto lifted_start = DrawingUtils::addPenLift(start_joints, config_.joint_calibration.lift_offset_joints);
+        
+        RCLCPP_INFO(this->get_logger(), "Lift offset joints: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+                  config_.joint_calibration.lift_offset_joints[0],
+                  config_.joint_calibration.lift_offset_joints[1],
+                  config_.joint_calibration.lift_offset_joints[2],
+                  config_.joint_calibration.lift_offset_joints[3],
+                  config_.joint_calibration.lift_offset_joints[4],
+                  config_.joint_calibration.lift_offset_joints[5]);
+        
+        RCLCPP_INFO(this->get_logger(), "Lifted start position: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+                  lifted_start[0], lifted_start[1], lifted_start[2],
+                  lifted_start[3], lifted_start[4], lifted_start[5]);
+        
         waypoints.push_back(lifted_start);
         
         // Lower pen to drawing position
@@ -354,8 +430,18 @@ void UR5DrawingNode::executeJointDrawing(const DrawingSequences& sequences) {
         auto lifted_end = DrawingUtils::addPenLift(end_joints, config_.joint_calibration.lift_offset_joints);
         waypoints.push_back(lifted_end);
         
+        RCLCPP_INFO(this->get_logger(), "Generated %zu waypoints for sequence", waypoints.size());
+        
         // Execute joint path
         executeJointPath(waypoints, false);
+        
+        // Lift pen between sequences
+        if (seq_idx < sequences.size() - 1) {
+            auto lifted_pos = DrawingUtils::addPenLift(end_joints, config_.joint_calibration.lift_offset_joints);
+            moveToJointPosition(lifted_pos, false);
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Finished drawing sequence %zu/%zu", seq_idx + 1, sequences.size());
     }
     
     // Return to home position
@@ -364,17 +450,124 @@ void UR5DrawingNode::executeJointDrawing(const DrawingSequences& sequences) {
 }
 
 JointPosition UR5DrawingNode::imageToJointAngles(const std::array<double, 2>& point) {
-    return DrawingUtils::imageToJointSpace(
+    RCLCPP_INFO(this->get_logger(), "Converting image point [%.2f, %.2f] to joint angles", point[0], point[1]);
+    
+    // Print corner positions used for interpolation
+    RCLCPP_DEBUG(this->get_logger(), "Corner positions for interpolation:");
+    RCLCPP_DEBUG(this->get_logger(), "Bottom Left: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+               corner_positions_.bottom_left[0], corner_positions_.bottom_left[1],
+               corner_positions_.bottom_left[2], corner_positions_.bottom_left[3],
+               corner_positions_.bottom_left[4], corner_positions_.bottom_left[5]);
+    RCLCPP_DEBUG(this->get_logger(), "Bottom Right: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+               corner_positions_.bottom_right[0], corner_positions_.bottom_right[1],
+               corner_positions_.bottom_right[2], corner_positions_.bottom_right[3],
+               corner_positions_.bottom_right[4], corner_positions_.bottom_right[5]);
+    RCLCPP_DEBUG(this->get_logger(), "Top Left: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+               corner_positions_.top_left[0], corner_positions_.top_left[1],
+               corner_positions_.top_left[2], corner_positions_.top_left[3],
+               corner_positions_.top_left[4], corner_positions_.top_left[5]);
+    RCLCPP_DEBUG(this->get_logger(), "Top Right: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+               corner_positions_.top_right[0], corner_positions_.top_right[1],
+               corner_positions_.top_right[2], corner_positions_.top_right[3],
+               corner_positions_.top_right[4], corner_positions_.top_right[5]);
+    
+    // Image dimensions used for normalization
+    RCLCPP_DEBUG(this->get_logger(), "Image dimensions: %d x %d", config_.image.width, config_.image.height);
+    
+    JointPosition result = DrawingUtils::imageToJointSpace(
         point,
         {config_.image.width, config_.image.height},
         corner_positions_
     );
+    
+    // Log the resulting joint angles
+    // RCLCPP_INFO(this->get_logger(), "Calculated joint angles (rad): [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+    //           result[0], result[1], result[2], result[3], result[4], result[5]);
+    // RCLCPP_INFO(this->get_logger(), "Calculated joint angles (deg): [%.2f, %.2f, %.2f, %.2f, %.2f, %.2f]",
+    //           result[0]*180.0/M_PI, result[1]*180.0/M_PI, result[2]*180.0/M_PI, 
+    //           result[3]*180.0/M_PI, result[4]*180.0/M_PI, result[5]*180.0/M_PI);
+    
+    // Validate result to ensure no NaN or infinity values
+    bool valid = true;
+    for (int i = 0; i < 6; ++i) {
+        if (std::isnan(result[i]) || std::isinf(result[i])) {
+            RCLCPP_ERROR(this->get_logger(), "Invalid joint angle computed at index %d: %f", i, result[i]);
+            valid = false;
+        }
+    }
+    
+    // Check for all zeros - this is likely a computational error
+    bool all_zeros = true;
+    for (int i = 0; i < 6; ++i) {
+        if (std::abs(result[i]) > 1e-6) {  // Not zero within epsilon
+            all_zeros = false;
+            break;
+        }
+    }
+    
+    if (all_zeros) {
+        RCLCPP_ERROR(this->get_logger(), "All-zeros joint position computed for point [%.2f, %.2f]! This is likely an error.", 
+                    point[0], point[1]);
+        valid = false;
+    }
+    
+    if (!valid) {
+        RCLCPP_WARN(this->get_logger(), "Using default home position due to invalid joint calculation");
+        return config_.joint_calibration.home_position;
+    }
+    
+    return result;
 }
 
 void UR5DrawingNode::moveToJointPosition(const JointPosition& target_joints, bool with_interpolation) {
     if (isEmergencyStop()) {
         RCLCPP_WARN(this->get_logger(), "Movement cancelled due to emergency stop");
         return;
+    }
+
+    // Validate target joints first
+    bool valid_target = true;
+    for (int i = 0; i < 6; ++i) {
+        if (std::isnan(target_joints[i]) || std::isinf(target_joints[i])) {
+            RCLCPP_ERROR(this->get_logger(), "Invalid target joint angle at index %d: %f", i, target_joints[i]);
+            valid_target = false;
+        }
+    }
+    
+    if (!valid_target) {
+        RCLCPP_ERROR(this->get_logger(), "Cannot move to invalid joint position. Movement cancelled.");
+        return;
+    }
+    
+    // Check for all zeros - this is likely a computational error
+    bool all_zeros = true;
+    for (int i = 0; i < 6; ++i) {
+        if (std::abs(target_joints[i]) > 1e-6) {  // Not zero within epsilon
+            all_zeros = false;
+            break;
+        }
+    }
+    
+    if (all_zeros) {
+        RCLCPP_ERROR(this->get_logger(), "All-zeros joint position detected in target! This is likely an error. Movement cancelled.");
+        return;
+    }
+    
+    // Print current and target joint positions
+    auto current = getCurrentJointPosition();
+    RCLCPP_INFO(this->get_logger(), "Current joint position: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+              current[0], current[1], current[2], current[3], current[4], current[5]);
+    RCLCPP_INFO(this->get_logger(), "Target joint position: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+              target_joints[0], target_joints[1], target_joints[2], 
+              target_joints[3], target_joints[4], target_joints[5]);
+
+    // Calculate the distance between current and target positions
+    double joint_distance = DrawingUtils::jointSpaceDistance(current, target_joints);
+    RCLCPP_INFO(this->get_logger(), "Joint space distance: %.4f radians", joint_distance);
+    
+    // If distance is too large, warn and possibly limit motion
+    if (joint_distance > 2.0) {  // Arbitrary threshold, adjust as needed
+        RCLCPP_WARN(this->get_logger(), "Large joint motion detected (%.4f rad). This may exceed tolerances.", joint_distance);
     }
 
     if (!move_group_) {
@@ -409,10 +602,23 @@ void UR5DrawingNode::moveToJointPosition(const JointPosition& target_joints, boo
             }
             joint_positions_str += "]";
             RCLCPP_INFO(this->get_logger(), "%s", joint_positions_str.c_str());
+            
+            // Also log the last point for verification
+            if (my_plan.trajectory_.joint_trajectory.points.size() > 1) {
+                const auto& last_point = my_plan.trajectory_.joint_trajectory.points.back();
+                std::string last_joint_positions_str = "MoveIt! planned last point (degrees): [";
+                for (size_t i = 0; i < last_point.positions.size(); ++i) {
+                    last_joint_positions_str += std::to_string((last_point.positions[i] * 180.0) / M_PI);
+                    if (i < last_point.positions.size() - 1) {
+                        last_joint_positions_str += ", ";
+                    }
+                }
+                last_joint_positions_str += "]";
+                RCLCPP_INFO(this->get_logger(), "%s", last_joint_positions_str.c_str());
+            }
         }
 
         // 3. Execute the trajectory using your existing executeJointTrajectory
-        // This will send the trajectory to the scaled_joint_trajectory_controller
         if (!executeJointTrajectory(my_plan.trajectory_.joint_trajectory)) {
             throw std::runtime_error("Failed to execute MoveIt! planned trajectory");
         }
@@ -432,9 +638,9 @@ bool UR5DrawingNode::executeJointTrajectory(const trajectory_msgs::msg::JointTra
     RCLCPP_INFO(this->get_logger(), "--- Executing Joint Trajectory ---");
     if (!trajectory.points.empty()) {
         const auto& first_point = trajectory.points[0];
-        std::string joint_positions_str = "First point joint positions: [";
+        std::string joint_positions_str = "First point joint positions (degrees): [";
         for (size_t i = 0; i < first_point.positions.size(); ++i) {
-            joint_positions_str += std::to_string((first_point.positions[i] * 180)/ M_PI);
+            joint_positions_str += std::to_string((first_point.positions[i] * 180.0) / M_PI);
             if (i < first_point.positions.size() - 1) {
                 joint_positions_str += ", ";
             }
@@ -460,8 +666,19 @@ bool UR5DrawingNode::executeJointTrajectory(const trajectory_msgs::msg::JointTra
     
     // Validate trajectory first
     if (!validateTrajectory(trajectory)) {
-        RCLCPP_ERROR(this->get_logger(), "Trajectory validation failed");
-        return false;
+        RCLCPP_WARN(this->get_logger(), "Trajectory validation failed, attempting to fix...");
+        
+        // Fix the trajectory by replacing all-zeros points with current position
+        auto fixed_trajectory = fixTrajectory(trajectory);
+        
+        // Re-validate the fixed trajectory
+        if (!validateTrajectory(fixed_trajectory)) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to fix invalid trajectory");
+            return false;
+        } else {
+            RCLCPP_INFO(this->get_logger(), "Successfully fixed trajectory, proceeding with execution");
+            return executeJointTrajectory(fixed_trajectory);
+        }
     }
     
     try {
@@ -524,6 +741,64 @@ bool UR5DrawingNode::executeJointTrajectory(const trajectory_msgs::msg::JointTra
     }
 }
 
+trajectory_msgs::msg::JointTrajectory UR5DrawingNode::fixTrajectory(
+    const trajectory_msgs::msg::JointTrajectory& trajectory) {
+    
+    if (trajectory.points.empty() || trajectory.joint_names.empty()) {
+        return trajectory;
+    }
+    
+    trajectory_msgs::msg::JointTrajectory fixed_trajectory = trajectory;
+    bool trajectory_modified = false;
+    
+    // Get current joint state by name
+    std::map<std::string, double> current_joint_map;
+    JointPosition current = getCurrentJointPosition();
+    for (size_t i = 0; i < joint_names_.size(); ++i) {
+        current_joint_map[joint_names_[i]] = current[i];
+    }
+    
+    // Check each point in the trajectory
+    for (size_t i = 0; i < fixed_trajectory.points.size(); ++i) {
+        auto& point = fixed_trajectory.points[i];
+        
+        // Check if this is an all-zeros point
+        bool all_zeros = true;
+        for (size_t j = 0; j < point.positions.size(); ++j) {
+            if (std::abs(point.positions[j]) > 1e-6) {
+                all_zeros = false;
+                break;
+            }
+        }
+        
+        // Replace all-zeros points with current position using joint names
+        if (all_zeros) {
+            RCLCPP_WARN(this->get_logger(), 
+                "Fixing all-zeros point at index %zu in trajectory", i);
+            
+            for (size_t j = 0; j < point.positions.size(); ++j) {
+                const std::string& joint_name = fixed_trajectory.joint_names[j];
+                if (current_joint_map.find(joint_name) != current_joint_map.end()) {
+                    point.positions[j] = current_joint_map[joint_name];
+                } else {
+                    RCLCPP_ERROR(this->get_logger(), 
+                        "Joint %s not found in current state! Using 0.0", 
+                        joint_name.c_str());
+                    point.positions[j] = 0.0;
+                }
+            }
+            trajectory_modified = true;
+        }
+    }
+    
+    if (trajectory_modified) {
+        RCLCPP_INFO(this->get_logger(), 
+            "Trajectory was modified to fix invalid points");
+    }
+    
+    return fixed_trajectory;
+}
+
 void UR5DrawingNode::executeJointPath(const std::vector<JointPosition>& waypoints, bool lift_pen_between) {
     if (waypoints.empty()) {
         RCLCPP_WARN(this->get_logger(), "Empty waypoint list");
@@ -535,6 +810,12 @@ void UR5DrawingNode::executeJointPath(const std::vector<JointPosition>& waypoint
             RCLCPP_WARN(this->get_logger(), "Path execution stopped due to emergency stop");
             break;
         }
+        
+        // Print waypoint information
+        RCLCPP_INFO(this->get_logger(), "Moving to waypoint %zu/%zu", i+1, waypoints.size());
+        RCLCPP_DEBUG(this->get_logger(), "Waypoint joint position: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+                   waypoints[i][0], waypoints[i][1], waypoints[i][2],
+                   waypoints[i][3], waypoints[i][4], waypoints[i][5]);
         
         // Move to waypoint
         moveToJointPosition(waypoints[i], true);
@@ -549,6 +830,13 @@ void UR5DrawingNode::executeJointPath(const std::vector<JointPosition>& waypoint
 
 void UR5DrawingNode::moveToHome() {
     RCLCPP_INFO(this->get_logger(), "Moving to home position...");
+    RCLCPP_INFO(this->get_logger(), "Home position: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+              config_.joint_calibration.home_position[0],
+              config_.joint_calibration.home_position[1],
+              config_.joint_calibration.home_position[2],
+              config_.joint_calibration.home_position[3],
+              config_.joint_calibration.home_position[4],
+              config_.joint_calibration.home_position[5]);
     moveToJointPosition(config_.joint_calibration.home_position, true);
 }
 
@@ -593,7 +881,7 @@ void UR5DrawingNode::visualizeDrawing(const DrawingSequences& sequences) {
         visualization_msgs::msg::Marker marker;
         marker.header.frame_id = "base_link";
         marker.header.stamp = this->get_clock()->now();
-        marker.ns = "joint_drawing";
+        marker.ns = "drawing";
         marker.id = marker_id++;
         marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
         marker.action = visualization_msgs::msg::Marker::ADD;
@@ -647,9 +935,31 @@ bool UR5DrawingNode::validateTrajectory(const trajectory_msgs::msg::JointTraject
         JointPosition joint_pos;
         std::copy(point.positions.begin(), point.positions.begin() + 6, joint_pos.begin());
         
+        // Check for all zeros - this is likely a computational error
+        bool all_zeros = true;
+        for (int i = 0; i < 6; ++i) {
+            if (std::abs(joint_pos[i]) > 1e-6) {  // Not zero within epsilon
+                all_zeros = false;
+                break;
+            }
+        }
+        
+        if (all_zeros) {
+            RCLCPP_ERROR(this->get_logger(), "All-zeros joint position detected in trajectory! This is likely an error.");
+            return false;
+        }
+        
         if (!DrawingUtils::validateJointLimits(joint_pos, min_limits, max_limits)) {
             RCLCPP_ERROR(this->get_logger(), "Trajectory point exceeds joint limits");
             return false;
+        }
+        
+        // Check for NaN or infinity values
+        for (int i = 0; i < 6; ++i) {
+            if (std::isnan(joint_pos[i]) || std::isinf(joint_pos[i])) {
+                RCLCPP_ERROR(this->get_logger(), "Invalid joint angle in trajectory at index %d: %f", i, joint_pos[i]);
+                return false;
+            }
         }
     }
     
@@ -670,6 +980,42 @@ void UR5DrawingNode::updateCornerPositions() {
     corner_positions_.bottom_right = config_.joint_calibration.corners.bottom_right;
     corner_positions_.top_left = config_.joint_calibration.corners.top_left;
     corner_positions_.top_right = config_.joint_calibration.corners.top_right;
+    
+    // Print corner positions for verification
+    RCLCPP_INFO(this->get_logger(), "Updated corner positions for interpolation:");
+    RCLCPP_INFO(this->get_logger(), "Bottom Left: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+              corner_positions_.bottom_left[0], corner_positions_.bottom_left[1],
+              corner_positions_.bottom_left[2], corner_positions_.bottom_left[3],
+              corner_positions_.bottom_left[4], corner_positions_.bottom_left[5]);
+    RCLCPP_INFO(this->get_logger(), "Bottom Right: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+              corner_positions_.bottom_right[0], corner_positions_.bottom_right[1],
+              corner_positions_.bottom_right[2], corner_positions_.bottom_right[3],
+              corner_positions_.bottom_right[4], corner_positions_.bottom_right[5]);
+    RCLCPP_INFO(this->get_logger(), "Top Left: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+              corner_positions_.top_left[0], corner_positions_.top_left[1],
+              corner_positions_.top_left[2], corner_positions_.top_left[3],
+              corner_positions_.top_left[4], corner_positions_.top_left[5]);
+    RCLCPP_INFO(this->get_logger(), "Top Right: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+              corner_positions_.top_right[0], corner_positions_.top_right[1],
+              corner_positions_.top_right[2], corner_positions_.top_right[3],
+              corner_positions_.top_right[4], corner_positions_.top_right[5]);
+    
+    // Validate that corner positions are valid
+    bool valid_corners = true;
+    for (int i = 0; i < 6; ++i) {
+        if (std::isnan(corner_positions_.bottom_left[i]) || std::isinf(corner_positions_.bottom_left[i]) ||
+            std::isnan(corner_positions_.bottom_right[i]) || std::isinf(corner_positions_.bottom_right[i]) ||
+            std::isnan(corner_positions_.top_left[i]) || std::isinf(corner_positions_.top_left[i]) ||
+            std::isnan(corner_positions_.top_right[i]) || std::isinf(corner_positions_.top_right[i])) {
+            
+            RCLCPP_ERROR(this->get_logger(), "Invalid corner position value detected at joint index %d", i);
+            valid_corners = false;
+        }
+    }
+    
+    if (!valid_corners) {
+        RCLCPP_WARN(this->get_logger(), "Invalid corner positions may cause incorrect joint angle calculations!");
+    }
 }
 
 } // namespace ur5_drawing
