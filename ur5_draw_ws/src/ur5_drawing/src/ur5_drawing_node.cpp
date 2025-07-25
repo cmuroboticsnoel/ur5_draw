@@ -205,11 +205,11 @@ void UR5DrawingNode::startDrawingCallback(
         // Load drawing sequences
         auto sequences = loadDrawingSequences();
         
-        visualizeDrawing(sequences);
         // Execute drawing
         executeJointDrawing(sequences);
-
+        
         // Visualize the entire drawing
+        visualizeDrawing(sequences);
         
         
         response->success = true;
@@ -1062,7 +1062,6 @@ void UR5DrawingNode::updateCornerPositions() {
         RCLCPP_WARN(this->get_logger(), "Invalid corner positions may cause incorrect joint angle calculations!");
     }
 }
-
 } // namespace ur5_drawing
 
 int main(int argc, char** argv) {

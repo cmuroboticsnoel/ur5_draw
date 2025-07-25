@@ -1,3 +1,11 @@
 ROS_WS=${HOME}/ur5_draw/ur5_draw_ws
 alias sros='source /opt/ros/humble/setup.bash && source /home/robots/ur5_draw/ur5_draw_ws/install/setup.bash'
 alias k9='kill -9 %'
+alias _TL='ros2 service call /top_left std_srvs/srv/Trigger'
+alias _TR='ros2 service call /top_right std_srvs/srv/Trigger'
+alias _BL='ros2 service call /bottom_left std_srvs/srv/Trigger'
+alias _BR='ros2 service call /bottom_right std_srvs/srv/Trigger'
+alias _HOME='ros2 service call /home_position std_srvs/srv/Trigger'
+alias _ORIGIN='ros2 service call /origin_position std_srvs/srv/Trigger'
+alias _START='ros2 service call /start_drawing std_srvs/srv/Trigger'
+alias _save='ros2 service call /save_all std_srvs/srv/Trigger'
