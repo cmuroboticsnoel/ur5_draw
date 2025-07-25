@@ -220,6 +220,8 @@ private:
      */
     void visualizeDrawing(const DrawingSequences& sequences);
 
+    void visualizeSingleSequence(const DrawingSequence& sequence, const std::string& ns, int id);
+
     /**
      * @brief Check if robot is in emergency stop state
      */

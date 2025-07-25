@@ -58,6 +58,49 @@ def get_optimal_threshold(edges):
     
     return optimal_thresh
 
+def transform_points_to_canvas(sequences, original_width, original_height):
+    """
+    Transform extracted points to fit within 800x600 landscape canvas
+    with padding and centered positioning
+    """
+    # Target canvas dimensions
+    canvas_width = 800
+    canvas_height = 600
+    
+    # Calculate aspect ratios
+    original_ratio = original_width / original_height
+    canvas_ratio = canvas_width / canvas_height
+    
+    # Determine scaling factor
+    if original_ratio > canvas_ratio:
+        # Landscape image - scale to width
+        scale = canvas_width / original_width
+    else:
+        # Portrait image - scale to height
+        scale = canvas_height / original_height
+    
+    # Apply scaling
+    scaled_width = original_width * scale
+    scaled_height = original_height * scale
+    
+    # Calculate padding to center image
+    pad_x = (canvas_width - scaled_width) / 2
+    pad_y = (canvas_height - scaled_height) / 2
+    
+    # Transform all points
+    transformed_sequences = []
+    for sequence in sequences:
+        transformed_sequence = []
+        for point in sequence:
+            x, y = point
+            # Scale and add padding
+            x_new = (x * scale) + pad_x
+            y_new = (y * scale) + pad_y
+            transformed_sequence.append([x_new, y_new])
+        transformed_sequences.append(transformed_sequence)
+    
+    return transformed_sequences, scale, pad_x, pad_y
+
 def export_to_json(sequences, image_path):
     """
     Export drawing sequences to JSON format for UR5 drawing node
@@ -194,6 +237,9 @@ def main():
     # Analyze image properties
     image_props = analyze_image_properties(image)
     
+    # Get original image dimensions
+    original_height, original_width = image.shape[:2]
+    
     # Auto-detect noise level based on image properties
     if image_props['laplacian_var'] > 1000000 or image_props['edge_density'] > 1.50:
         noise_level = 'high'
@@ -301,11 +347,27 @@ def main():
     print(f"  Refined sequences: {len(refined_sequences)}")
     print(f"  Reduction: {len(edge_sequences) - len(refined_sequences)} sequences removed")
     
+    # ====== NEW SECTION: Transform points to canvas ======
+    print("\nTransforming points to fit 800x600 canvas...")
+    
+    # Transform points to fit canvas
+    transformed_sequences, scale, pad_x, pad_y = transform_points_to_canvas(
+        refined_sequences,
+        original_width,
+        original_height
+    )
+    
+    print(f"  Applied scaling factor: {scale:.4f}")
+    print(f"  Horizontal padding: {pad_x:.1f} pixels")
+    print(f"  Vertical padding: {pad_y:.1f} pixels")
+    
+    # ====== END NEW SECTION ======
+    
     # Automatically validate and export sequences for robot use
     print("\nPreparing sequences for UR5 robot...")
     
     # Validate and clean sequences for robot use
-    robot_sequences = validate_sequences_for_robot(refined_sequences, 
+    robot_sequences = validate_sequences_for_robot(transformed_sequences, 
                                                  image_width=800, 
                                                  image_height=600)
     
@@ -315,6 +377,22 @@ def main():
         
         if json_path:
             print(f"\nProcessing complete for {os.path.basename(image_path)}")
+            
+            # Show transformation summary
+            print("\nCanvas Transformation Summary:")
+            print(f"  Original dimensions: {original_width} x {original_height}")
+            print(f"  Scaled dimensions: {original_width*scale:.1f} x {original_height*scale:.1f}")
+            print(f"  Canvas dimensions: 800 x 600")
+            print(f"  Horizontal padding: {pad_x:.1f} pixels")
+            print(f"  Vertical padding: {pad_y:.1f} pixels")
+            
+            # Print sample point before/after transformation
+            if refined_sequences and refined_sequences[0]:
+                original_point = refined_sequences[0][0]
+                transformed_point = robot_sequences[0][0]
+                print(f"\nSample point transformation:")
+                print(f"  Original: ({original_point[0]:.1f}, {original_point[1]:.1f})")
+                print(f"  Transformed: ({transformed_point[0]:.1f}, {transformed_point[1]:.1f})")
         else:
             print("✗ Failed to export JSON file!")
     else:

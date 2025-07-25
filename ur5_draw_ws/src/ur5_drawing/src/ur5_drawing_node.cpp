@@ -81,7 +81,7 @@ UR5DrawingNode::UR5DrawingNode() : Node("ur5_drawing_node"), emergency_stop_(fal
         }
     );
     
-    RCLCPP_INFO(this->get_logger(), "UR5 Joint Drawing Node initialized. MoveIt will be initialized in 3 seconds.");
+    RCLCPP_INFO(this->get_logger(), "UR5 Drawing Node initialized. MoveIt will be initialized in 3 seconds.");
 }
 
 UR5DrawingNode::~UR5DrawingNode() {
@@ -92,7 +92,7 @@ void UR5DrawingNode::initializeParameters() {
     // Update corner positions from configuration
     updateCornerPositions();
     
-    RCLCPP_INFO(this->get_logger(), "Joint-based drawing parameters initialized");
+    RCLCPP_INFO(this->get_logger(), "drawing parameters initialized");
 }
 
 void UR5DrawingNode::initializeMoveIt() {
@@ -125,7 +125,7 @@ void UR5DrawingNode::initializeMoveIt() {
         move_group_->setMaxVelocityScalingFactor(config_.safety.max_velocity);
         move_group_->setMaxAccelerationScalingFactor(config_.safety.max_acceleration);
         
-        RCLCPP_INFO(this->get_logger(), "MoveIt! initialized for visualization. Ready for joint-based drawing.");
+        RCLCPP_INFO(this->get_logger(), "MoveIt! initialized for visualization. Ready for drawing.");
         
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "Failed to initialize MoveIt!: %s", e.what());
@@ -199,20 +199,21 @@ void UR5DrawingNode::startDrawingCallback(
         return;
     }
     
-    RCLCPP_INFO(this->get_logger(), "Starting joint-based drawing process...");
+    RCLCPP_INFO(this->get_logger(), "Starting drawing process...");
     
     try {
         // Load drawing sequences
         auto sequences = loadDrawingSequences();
         
-        // Execute joint-based drawing
-        executeJointDrawing(sequences);
-        
-        // Visualize the entire drawing
         visualizeDrawing(sequences);
+        // Execute drawing
+        executeJointDrawing(sequences);
+
+        // Visualize the entire drawing
+        
         
         response->success = true;
-        response->message = "Joint-based drawing completed successfully";
+        response->message = "drawing completed successfully";
         
     } catch (const std::exception& e) {
         response->success = false;
@@ -369,19 +370,22 @@ UR5DrawingNode::DrawingSequences UR5DrawingNode::loadDrawingSequences() {
 }
 
 void UR5DrawingNode::executeJointDrawing(const DrawingSequences& sequences) {
-    RCLCPP_INFO(this->get_logger(), "Starting joint-based drawing execution...");
+    RCLCPP_INFO(this->get_logger(), "Starting drawing execution...");
     
     // Move to home position first
     moveToHome();
     
     // Draw each sequence
     for (size_t seq_idx = 0; seq_idx < sequences.size(); ++seq_idx) {
+        
         if (isEmergencyStop()) {
             RCLCPP_WARN(this->get_logger(), "Drawing stopped due to emergency stop");
             break;
         }
         
         const auto& sequence = sequences[seq_idx];
+
+        visualizeSingleSequence(sequence, "preview", seq_idx);
         
         RCLCPP_INFO(this->get_logger(), 
                    "Drawing sequence %zu/%zu with %zu points",
@@ -446,11 +450,11 @@ void UR5DrawingNode::executeJointDrawing(const DrawingSequences& sequences) {
     
     // Return to home position
     moveToHome();
-    RCLCPP_INFO(this->get_logger(), "Joint-based drawing completed!");
+    RCLCPP_INFO(this->get_logger(), "drawing completed!");
 }
 
 JointPosition UR5DrawingNode::imageToJointAngles(const std::array<double, 2>& point) {
-    RCLCPP_INFO(this->get_logger(), "Converting image point [%.2f, %.2f] to joint angles", point[0], point[1]);
+    // RCLCPP_INFO(this->get_logger(), "Converting image point [%.2f, %.2f] to joint angles", point[0], point[1]);
     
     // Print corner positions used for interpolation
     RCLCPP_DEBUG(this->get_logger(), "Corner positions for interpolation:");
@@ -888,7 +892,7 @@ void UR5DrawingNode::visualizeDrawing(const DrawingSequences& sequences) {
         marker.scale.x = 0.01; // Line width
         marker.color.r = 0.0;
         marker.color.g = 0.0;
-        marker.color.b = 1.0; // Blue for joint-based drawing
+        marker.color.b = 1.0; // Blue for drawing
         marker.color.a = 1.0;
         
         // Convert joint positions to Cartesian for visualization
@@ -919,8 +923,49 @@ void UR5DrawingNode::visualizeDrawing(const DrawingSequences& sequences) {
     
     // Publish marker array
     marker_pub_->publish(marker_array);
-    RCLCPP_INFO(this->get_logger(), "Joint-based drawing visualization published");
+    RCLCPP_INFO(this->get_logger(), "drawing visualization published");
 }
+
+void UR5DrawingNode::visualizeSingleSequence(const DrawingSequence& sequence, const std::string& ns, int id) {
+    visualization_msgs::msg::MarkerArray marker_array;
+    visualization_msgs::msg::Marker marker;
+    
+    marker.header.frame_id = "base_link";
+    marker.header.stamp = this->get_clock()->now();
+    marker.ns = ns;
+    marker.id = id;
+    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = 0.01;
+    marker.color.r = 1.0; // Red for preview
+    marker.color.g = 0.0;
+    marker.color.b = 0.0;
+    marker.color.a = 1.0;
+
+    if (move_group_ && robot_state_) {
+        for (const auto& point : sequence) {
+            auto joint_pos = imageToJointAngles(point);
+            
+            robot_state_->setJointGroupPositions(config_.planning.planning_group, 
+                std::vector<double>(joint_pos.begin(), joint_pos.end()));
+            
+            const auto& end_effector_state = robot_state_->getGlobalLinkTransform("tool0");
+            
+            geometry_msgs::msg::Point p;
+            p.x = end_effector_state.translation().x();
+            p.y = end_effector_state.translation().y();
+            p.z = end_effector_state.translation().z();
+            marker.points.push_back(p);
+        }
+    }
+
+    if (!marker.points.empty()) {
+        marker_array.markers.push_back(marker);
+        marker_pub_->publish(marker_array);
+        RCLCPP_INFO(this->get_logger(), "Visualizing sequence %d with %zu points", id, sequence.size());
+    }
+}
+
 
 bool UR5DrawingNode::validateTrajectory(const trajectory_msgs::msg::JointTrajectory& trajectory) {
     auto [min_limits, max_limits] = DrawingUtils::getUR5JointLimits();
