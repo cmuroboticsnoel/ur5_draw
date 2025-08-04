@@ -231,7 +231,7 @@ if ! python3 -c "import yaml" 2>/dev/null; then
     echo ""
 fi
 
-echo -e "${GREEN}🎉 Setup completed successfully!${NC}"
+echo -e "${GREEN} Setup completed successfully!${NC}"
 echo ""
 echo "Your UR5 Drawing system is now configured and ready to use!"
 echo "Open a new terminal to see the workspace sourcing in action."

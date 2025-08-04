@@ -85,7 +85,7 @@ UR5DrawingNode::UR5DrawingNode() : Node("ur5_drawing_node"), emergency_stop_(fal
 }
 
 UR5DrawingNode::~UR5DrawingNode() {
-    // Cleanup is handled automatically by smart pointers
+    // Cleanup is handled automatically
 }
 
 void UR5DrawingNode::initializeParameters() {
