@@ -9,6 +9,8 @@ This project combines:
 - **Computer Vision Pipeline** for image-to-trajectory conversion
 - **Joint-based Control** for precise drawing movements
 
+For background and explainers, click [here](https://github.com/cmuroboticsnoel/ur5_draw/blob/main/docs/Robotics%20%26%20Drawing%20Supplemental.pdf) to view supplemental.
+
 ## Quick Start
 
 ### 1. Prerequisites
